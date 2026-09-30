@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Indian and US market dashboard: technicals, news sentiment, a D-day directional model, and a teaching layer that explains today's moves.">
+<meta name="theme-color" content="#0b0e14">
+<title>Market Desk</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📈</text></svg>">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="css/app.css">
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js" defer></script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn nav-toggle" id="navToggle" aria-label="Menu">☰</button>
+  <div class="brand"><span class="brand-dot"></span> Market Desk</div>
+  <div class="market-switch" id="marketSwitch" role="tablist">
+    <button data-market="IN" class="active" role="tab">🇮🇳 India</button>
+    <button data-market="US" role="tab">🇺🇸 US</button>
+  </div>
+  <div class="spacer"></div>
+  <div class="stamp" id="stamp"></div>
+  <button class="icon-btn" id="refreshBtn" title="Reload data">⟳</button>
+  <button class="icon-btn" id="themeBtn" title="Toggle theme">◐</button>
+  <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
+</header>
+
+<div class="layout">
+  <nav class="nav" id="nav">
+    <div class="nav-group">Market</div>
+    <button data-view="overview" class="active">◎ Overview</button>
+    <button data-view="watchlist">★ Watchlist</button>
+    <button data-view="movers">⇅ Movers</button>
+    <button data-view="sectors">▦ Sectors</button>
+    <div class="nav-group">Signals</div>
+    <button data-view="ideas">⚡ Ideas</button>
+    <button data-view="model">🤖 Model</button>
+    <button data-view="alerts">🔔 Alerts <span class="badge hidden" id="alertBadge">0</span></button>
+    <div class="nav-group">Context</div>
+    <button data-view="news">📰 News</button>
+    <button data-view="learn">🎓 Learn</button>
+    <button data-view="about">ⓘ About</button>
+  </nav>
+
+  <main class="main" id="main">
+    <div class="loader"><div class="spin"></div><div>Loading market data…</div></div>
+  </main>
+</div>
+
+<div id="modalRoot"></div>
+<script src="js/app.js" type="module"></script>
+</body>
+</html>

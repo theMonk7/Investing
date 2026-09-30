@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "IN": [
+    "RELIANCE.NS",
+    "TCS.NS",
+    "HDFCBANK.NS",
+    "INFY.NS",
+    "ICICIBANK.NS",
+    "BHARTIARTL.NS",
+    "SBIN.NS",
+    "LT.NS",
+    "ITC.NS",
+    "AXISBANK.NS",
+    "TMPV.NS",
+    "SUNPHARMA.NS",
+    "MARUTI.NS",
+    "TITAN.NS",
+    "ADANIENT.NS"
+  ],
+  "US": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "GOOGL",
+    "AMZN",
+    "META",
+    "TSLA",
+    "AMD",
+    "JPM",
+    "SPY"
+  ],
+  "bookmarks": [],
+  "notes": {}
+}

@@ -1,0 +1,41 @@
+name: Phone digest
+
+on:
+  schedule:
+    - cron: "45 3 * * 1-5"    # 09:15 IST — pre-open brief
+    - cron: "15 11 * * 1-5"   # 16:45 IST — Indian post-close wrap
+    - cron: "0 22 * * 1-5"    # 18:00 ET  — US post-close wrap
+  workflow_dispatch:
+    inputs:
+      markets:
+        default: "IN,US"
+      dry_run:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Send digest
+        working-directory: pipeline
+        env:
+          NTFY_TOPIC:         ${{ secrets.NTFY_TOPIC }}
+          NTFY_SERVER:        ${{ vars.NTFY_SERVER }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          CALLMEBOT_PHONE:    ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_APIKEY:   ${{ secrets.CALLMEBOT_APIKEY }}
+          DISCORD_WEBHOOK:    ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          python digest.py --markets "${{ inputs.markets || 'IN,US' }}" \
+            ${{ inputs.dry_run == true && '--dry-run' || '' }}

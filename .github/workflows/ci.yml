@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths: ["pipeline/**", "web/**", "tests/**", ".github/workflows/ci.yml"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pipeline:
+    name: Pipeline (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+      - run: pip install -r pipeline/requirements.txt
+      - name: Synthetic end-to-end check
+        run: python tests/test_pipeline_offline.py
+
+  dashboard:
+    name: Dashboard render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: npm install --no-audit --no-fund
+      - name: Serve committed data
+        run: |
+          python3 -m http.server 8000 &
+          for _ in $(seq 20); do
+            curl -sf -o /dev/null http://127.0.0.1:8000/web/index.html && break
+            sleep 0.5
+          done
+      - name: Render every view in jsdom
+        env:
+          PORT: 8000
+        run: node tests/render-test.mjs

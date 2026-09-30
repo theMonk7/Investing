@@ -1,0 +1,114 @@
+name: Market pipeline
+
+on:
+  schedule:
+    # Times are UTC. IST = UTC+5:30, NSE trades 09:15-15:30 IST (03:45-10:00 UTC).
+    - cron: "5 4,6,8,10 * * 1-5"      # India: through the session + close
+    - cron: "45 10 * * 1-5"           # India: post-close full run (news + model)
+    - cron: "0 15,18,20 * * 1-5"      # US: open, midday, near close (ET = UTC-4/5)
+    - cron: "30 21 * * 1-5"           # US: post-close full run
+    - cron: "0 7 * * 6"               # Weekend: one full run to keep data warm
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "quotes (fast) | news (news+teaching) | full (retrain model)"
+        type: choice
+        options: [quotes, news, full]
+        default: news
+      markets:
+        description: "Comma-separated: IN,US"
+        default: "IN,US"
+
+concurrency:
+  group: market-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r pipeline/requirements.txt
+
+      - name: Pick mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.mode }}"       >> "$GITHUB_OUTPUT"
+            echo "markets=${{ inputs.markets }}" >> "$GITHUB_OUTPUT"
+          else
+            # The two post-close crons do the expensive work; the rest stay cheap.
+            case "${{ github.event.schedule }}" in
+              "45 10 * * 1-5") echo "mode=full" >> "$GITHUB_OUTPUT" ;;
+              "30 21 * * 1-5") echo "mode=full" >> "$GITHUB_OUTPUT" ;;
+              "0 7 * * 6")     echo "mode=full" >> "$GITHUB_OUTPUT" ;;
+              *)               echo "mode=quotes" >> "$GITHUB_OUTPUT" ;;
+            esac
+            echo "markets=IN,US" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run pipeline
+        working-directory: pipeline
+        env:
+          # --- notifications (all optional) ---
+          NTFY_TOPIC:         ${{ secrets.NTFY_TOPIC }}
+          NTFY_SERVER:        ${{ vars.NTFY_SERVER }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          CALLMEBOT_PHONE:    ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_APIKEY:   ${{ secrets.CALLMEBOT_APIKEY }}
+          DISCORD_WEBHOOK:    ${{ secrets.DISCORD_WEBHOOK }}
+          # --- optional LLM (first key found wins) ---
+          GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # --- tunables (repository variables, not secrets) ---
+          NEWS_WINDOW_DAYS:     ${{ vars.NEWS_WINDOW_DAYS }}
+          PREDICT_HORIZON_DAYS: ${{ vars.PREDICT_HORIZON_DAYS }}
+          ALERT_PCT_MOVE:       ${{ vars.ALERT_PCT_MOVE }}
+          ALERT_VOLUME_Z:       ${{ vars.ALERT_VOLUME_Z }}
+          ALERT_RSI_HIGH:       ${{ vars.ALERT_RSI_HIGH }}
+          ALERT_RSI_LOW:        ${{ vars.ALERT_RSI_LOW }}
+          ALERT_COOLDOWN_HOURS: ${{ vars.ALERT_COOLDOWN_HOURS }}
+        run: python run_all.py --mode "${{ steps.mode.outputs.mode }}" --markets "${{ steps.mode.outputs.markets }}"
+
+      - name: Commit data
+        run: |
+          git config user.name  "market-pipeline[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "No data changes."
+            exit 0
+          fi
+          git commit -m "data: ${{ steps.mode.outputs.mode }} refresh $(date -u +'%Y-%m-%d %H:%M UTC')"
+          # The dashboard may have committed a watchlist change while we ran.
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push && exit 0
+            sleep 5
+          done
+          echo "::error::Could not push data after 3 attempts"
+          exit 1
+
+      - name: Report failure to phone
+        if: failure()
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          if [ -n "$NTFY_TOPIC" ]; then
+            curl -fsS -H "Title: Market pipeline failed" -H "Priority: high" -H "Tags: rotating_light" \
+              -d "Run ${{ github.run_id }} failed. Check the Actions tab." \
+              "https://ntfy.sh/$NTFY_TOPIC" || true
+          fi

@@ -1,0 +1,12 @@
+{
+  "name": "Market Desk",
+  "short_name": "MktDesk",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0b0e14",
+  "theme_color": "#0b0e14",
+  "icons": [
+    { "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>%F0%9F%93%88</text></svg>",
+      "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

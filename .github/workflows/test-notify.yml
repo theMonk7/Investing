@@ -1,0 +1,38 @@
+name: Test notifications
+
+# Run this once after adding your secrets to confirm the phone actually buzzes.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install requests
+      - name: Send a test alert on every configured channel
+        working-directory: pipeline
+        env:
+          NTFY_TOPIC:         ${{ secrets.NTFY_TOPIC }}
+          NTFY_SERVER:        ${{ vars.NTFY_SERVER }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          CALLMEBOT_PHONE:    ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_APIKEY:   ${{ secrets.CALLMEBOT_APIKEY }}
+          DISCORD_WEBHOOK:    ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          python - <<'PY'
+          import digest
+          channels = digest.send(
+              "test",
+              "If you can read this on your phone, the channel works.\n"
+              "Sent by the Test notifications workflow.")
+          print("delivered via:", channels or "NOTHING — no secret is set or all failed")
+          if not channels:
+              raise SystemExit(1)
+          PY
