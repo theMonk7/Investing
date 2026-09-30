@@ -1,9 +1,51 @@
 """Central configuration. Everything overridable via env vars so GitHub Actions
-secrets are the only place real credentials ever live."""
+secrets are the only place real credentials ever live.
+
+A note on blanks: GitHub Actions substitutes an **empty string** for an unset
+`${{ vars.X }}`, so the variable is present but blank. `os.getenv(name,
+default)` never returns the default in that case, and `int("")` raises. Every
+read below goes through the helpers, which treat blank -- and unparseable --
+values as "not set".
+"""
 from __future__ import annotations
 
 import os
 from pathlib import Path
+
+
+def _raw(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def env_str(name: str, default: str = "") -> str:
+    return _raw(name) or default
+
+
+def env_int(name: str, default: int) -> int:
+    value = _raw(name)
+    if value is None:
+        return default
+    try:
+        return int(float(value))
+    except ValueError:
+        print(f"[config] {name}={value!r} is not a number; using {default}")
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    value = _raw(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        print(f"[config] {name}={value!r} is not a number; using {default}")
+        return default
+
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -14,38 +56,38 @@ DATA_DIR.mkdir(exist_ok=True)
 
 # --- analysis windows -------------------------------------------------------
 # "last D days" news window used for sentiment aggregation and prediction.
-NEWS_WINDOW_DAYS = int(os.getenv("NEWS_WINDOW_DAYS", "7"))
+NEWS_WINDOW_DAYS = env_int("NEWS_WINDOW_DAYS", 7)
 # How far ahead the classifier predicts.
-PREDICT_HORIZON_DAYS = int(os.getenv("PREDICT_HORIZON_DAYS", "5"))
+PREDICT_HORIZON_DAYS = env_int("PREDICT_HORIZON_DAYS", 5)
 # Years of daily history pulled for indicators + model training.
-HISTORY_PERIOD = os.getenv("HISTORY_PERIOD", "3y")
+HISTORY_PERIOD = env_str("HISTORY_PERIOD", "3y")
 
 # --- alert thresholds -------------------------------------------------------
-ALERT_PCT_MOVE = float(os.getenv("ALERT_PCT_MOVE", "3.0"))        # abs % day move
-ALERT_VOLUME_Z = float(os.getenv("ALERT_VOLUME_Z", "2.5"))        # volume z-score
-ALERT_RSI_HIGH = float(os.getenv("ALERT_RSI_HIGH", "72"))
-ALERT_RSI_LOW = float(os.getenv("ALERT_RSI_LOW", "28"))
-ALERT_SENTIMENT_ABS = float(os.getenv("ALERT_SENTIMENT_ABS", "0.45"))
-ALERT_COOLDOWN_HOURS = int(os.getenv("ALERT_COOLDOWN_HOURS", "6"))
+ALERT_PCT_MOVE = env_float("ALERT_PCT_MOVE", 3.0)        # abs % day move
+ALERT_VOLUME_Z = env_float("ALERT_VOLUME_Z", 2.5)        # volume z-score
+ALERT_RSI_HIGH = env_float("ALERT_RSI_HIGH", 72.0)
+ALERT_RSI_LOW = env_float("ALERT_RSI_LOW", 28.0)
+ALERT_SENTIMENT_ABS = env_float("ALERT_SENTIMENT_ABS", 0.45)
+ALERT_COOLDOWN_HOURS = env_int("ALERT_COOLDOWN_HOURS", 6)
 
 # --- notification channels (all optional; missing = channel skipped) --------
-NTFY_TOPIC = os.getenv("NTFY_TOPIC", "")          # e.g. "myname-stocks-9f3k"
-NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-CALLMEBOT_PHONE = os.getenv("CALLMEBOT_PHONE", "")   # WhatsApp, +91XXXXXXXXXX
-CALLMEBOT_APIKEY = os.getenv("CALLMEBOT_APIKEY", "")
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK", "")
+NTFY_TOPIC = env_str("NTFY_TOPIC")                # e.g. "myname-stocks-9f3k"
+NTFY_SERVER = env_str("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+TELEGRAM_BOT_TOKEN = env_str("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = env_str("TELEGRAM_CHAT_ID")
+CALLMEBOT_PHONE = env_str("CALLMEBOT_PHONE")      # WhatsApp, +91XXXXXXXXXX
+CALLMEBOT_APIKEY = env_str("CALLMEBOT_APIKEY")
+DISCORD_WEBHOOK = env_str("DISCORD_WEBHOOK")
 
 # --- optional LLM -----------------------------------------------------------
 # Provider is auto-detected from whichever key exists. Everything degrades to
 # deterministic template output when no key is set.
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+GROQ_API_KEY = env_str("GROQ_API_KEY")
+GROQ_MODEL = env_str("GROQ_MODEL", "llama-3.3-70b-versatile")
+GEMINI_API_KEY = env_str("GEMINI_API_KEY")
+GEMINI_MODEL = env_str("GEMINI_MODEL", "gemini-2.0-flash")
+OPENROUTER_API_KEY = env_str("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = env_str("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
 
-HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "25"))
+HTTP_TIMEOUT = env_int("HTTP_TIMEOUT", 25)
 USER_AGENT = "Mozilla/5.0 (compatible; investing-dashboard/1.0)"

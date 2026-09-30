@@ -13,6 +13,18 @@ template teaching output. Catches shape and key errors before a real run.
 python tests/test_pipeline_offline.py
 ```
 
+## `test_config_env.py`
+
+Runs `config.py` under the environment GitHub Actions actually produces. An
+unset `${{ vars.X }}` is substituted as an **empty string**, not omitted, so
+`os.getenv(name, default)` returns `""` and `int("")` raises — a real run
+failed on exactly that. Covers blank, whitespace-only, absent, unparseable
+and real values.
+
+```bash
+python tests/test_config_env.py
+```
+
 ## `render-test.mjs`
 
 Loads the real dashboard in jsdom against the committed `data/` snapshots,

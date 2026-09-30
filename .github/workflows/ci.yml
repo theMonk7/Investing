@@ -22,6 +22,8 @@ jobs:
           cache: pip
           cache-dependency-path: pipeline/requirements.txt
       - run: pip install -r pipeline/requirements.txt
+      - name: Config survives blank Actions variables
+        run: python tests/test_config_env.py
       - name: Synthetic end-to-end check
         run: python tests/test_pipeline_offline.py
 

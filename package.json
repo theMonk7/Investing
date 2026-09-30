@@ -6,7 +6,7 @@
   "scripts": {
     "serve": "python3 -m http.server 8000",
     "test:render": "node tests/render-test.mjs",
-    "test:pipeline": "python3 tests/test_pipeline_offline.py"
+    "test:pipeline": "python3 tests/test_config_env.py && python3 tests/test_pipeline_offline.py"
   },
   "devDependencies": {
     "jsdom": "^26.0.0"
