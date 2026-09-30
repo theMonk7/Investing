@@ -2,6 +2,7 @@
 
 import * as gh from './gh.js';
 import { $, $$, card, el, lsGet, lsSet, modal, pill, toast } from './lib.js';
+import * as newsViews from './news-views.js';
 import * as views from './views.js';
 
 // Pages publishes web/ with data/ copied inside it. A local `python -m
@@ -17,14 +18,18 @@ async function resolveDataBase() {
     } catch { /* try the next one */ }
   }
 }
-const VIEWS = { overview: views.overview, watchlist: views.watchlist, movers: views.movers,
+const VIEWS = {
+  overview: views.overview, watchlist: views.watchlist, movers: views.movers,
   sectors: views.sectors, ideas: views.ideas, model: views.model, alerts: views.alerts,
-  news: views.news, learn: views.learn, about: views.about };
+  news: newsViews.newsFeed, sectornews: newsViews.sectorNews, filings: newsViews.filings,
+  learn: views.learn, about: views.about,
+};
 
 const state = {
   market: lsGet('mktdesk.market', 'IN'),
   view: location.hash.slice(1) || 'overview',
   bundles: {},
+  feeds: {},
   meta: null,
   curriculum: [],
   scorecard: null,
@@ -51,6 +56,7 @@ async function loadAll(force = false) {
   for (const market of ['IN', 'US']) {
     if (force || !state.bundles[market]) {
       state.bundles[market] = await getJSON(`${market}/bundle.json`).catch(() => null);
+      state.feeds[market] = await getJSON(`${market}/feed.json`).catch(() => null);
     }
   }
   reconcileWatchlist();
@@ -121,6 +127,7 @@ const removeSymbol = (sym) =>
 function context() {
   return {
     bundle: state.bundles[state.market],
+    feed: state.feeds[state.market],
     meta: state.meta,
     curriculum: state.curriculum,
     scorecard: state.scorecard,
@@ -128,6 +135,8 @@ function context() {
     watchSymbols: state.watchlist?.[state.market] ?? [],
     syncLabel: gh.configured() ? 'synced to GitHub' : 'saved in this browser only',
     addSymbol, removeSymbol, openSettings,
+    rerender: render,
+    openStock: (sym) => views.stockDetail(context(), sym),
   };
 }
 
@@ -162,6 +171,19 @@ function render() {
   const badge = $('#alertBadge');
   badge.textContent = count;
   badge.classList.toggle('hidden', count === 0);
+
+  // Unread count uses first_seen (when WE saw the story), not the outlet's
+  // publish time, so backdated items still register as new to the reader.
+  const lastSeen = lsGet(`mktdesk.lastSeen.${state.market}`, null);
+  const unread = lastSeen
+    ? (state.feeds[state.market]?.items ?? [])
+        .filter((i) => (i.first_seen ?? '') > lastSeen).length
+    : 0;
+  const newsBadge = $('#newsBadge');
+  if (newsBadge) {
+    newsBadge.textContent = unread > 99 ? '99+' : unread;
+    newsBadge.classList.toggle('hidden', unread === 0);
+  }
 }
 
 // ----------------------------------------------------------------- settings
@@ -272,6 +294,10 @@ function openSettings() {
 // -------------------------------------------------------------------- wire
 function wire() {
   $$('#nav button').forEach((b) => b.addEventListener('click', () => {
+    // Leaving the feed marks everything currently loaded as seen.
+    if (state.view === 'news' && b.dataset.view !== 'news') {
+      lsSet(`mktdesk.lastSeen.${state.market}`, new Date().toISOString());
+    }
     state.view = b.dataset.view;
     location.hash = state.view;
     $('#nav').classList.remove('open');

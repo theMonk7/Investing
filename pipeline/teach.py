@@ -161,6 +161,51 @@ CURRICULUM = [
         ),
     },
     {
+        "id": "disclosures", "title": "Disclosed filings vs inside information",
+        "level": "intermediate", "tags": ["filings", "legal", "insiders"],
+        "body": (
+            "The Filings tab shows things companies and their insiders are "
+            "legally required to publish. In the US that is mainly Form 4 (an "
+            "officer, director or 10% holder bought or sold) and 8-K (a material "
+            "event, filed within four business days). In India the equivalents "
+            "are exchange filings, PIT disclosures and bulk/block deal reports.\n\n"
+            "These are public the moment they are posted, and often reach the "
+            "tape before the news cycle digests them. That is a legitimate "
+            "information edge: being faster at reading public documents.\n\n"
+            "It is categorically different from *inside information* — material "
+            "facts that have NOT been made public. Trading on those is illegal "
+            "under SEC Rule 10b-5 and SEBI's Prohibition of Insider Trading "
+            "Regulations, and it does not become legal because a journalist, a "
+            "forum or a group chat passed it to you. If a piece of information "
+            "would move the price and has not been published by the company or a "
+            "regulator, it is not a signal — it is a liability.\n\n"
+            "On reading Form 4: routine sales tell you very little, because much "
+            "insider selling is scheduled diversification under a 10b5-1 plan. "
+            "Open-market *buying* by several insiders at once is the rarer and "
+            "more informative signal — and even then it is weak on its own."
+        ),
+    },
+    {
+        "id": "corroboration", "title": "Judging whether a story is real",
+        "level": "beginner", "tags": ["news", "accuracy"],
+        "body": (
+            "The feed shows how many outlets carried each story. That count is "
+            "the cheapest accuracy check available: a genuine market-moving "
+            "event gets picked up widely within hours, while a single-outlet "
+            "story with a dramatic headline is often a rewrite of a rumour, an "
+            "analyst note or a press release.\n\n"
+            "Three habits that help. Prefer the primary source — an exchange "
+            "filing beats an article about the filing. Distinguish 'company "
+            "announced' from 'sources say'; the second is unverified by "
+            "definition. And check the timestamp: syndicated copies of old news "
+            "recirculate constantly, and a story you have not seen is not "
+            "necessarily new.\n\n"
+            "The feed marks items new by when *this dashboard* first saw them, "
+            "not by the outlet's own timestamp, so a backdated republication "
+            "does not masquerade as breaking news."
+        ),
+    },
+    {
         "id": "risk", "title": "Position sizing and stop losses", "level": "beginner",
         "tags": ["risk"],
         "body": (

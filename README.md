@@ -33,7 +33,9 @@ specifically.
 | Screener with the exact conditions behind every score | Ideas |
 | Relative-strength probability, per-feature attribution, holdout AUC, live scorecard | Model |
 | Alert history and the rules in force | Alerts |
-| Headlines with sentiment, market-wide and per stock | News |
+| Accumulating feed — new stories add, nothing is replaced; filters + search | Feed |
+| Sector board, sentiment history, per-sector story lists | Sector news |
+| SEC Form 4 / 8-K, India disclosures, catalysts, measured event reactions | Filings |
 | Contextual explanations of today's moves + a lesson library | Learn |
 | Phone push via ntfy / Telegram / WhatsApp / Discord | scheduled workflows |
 
@@ -141,6 +143,80 @@ secret `DISCORD_WEBHOOK`.
 
 ---
 
+## News, sectors and disclosures
+
+### The feed accumulates
+
+Every story is stored in SQLite keyed by a content hash, with a `first_seen`
+timestamp recording when **this pipeline** first saw it. A refresh therefore
+*adds* to the list rather than replacing it, and the "new since your last
+visit" dot uses `first_seen`, not the outlet's own timestamp — so a backdated
+republication cannot masquerade as breaking news. 400 stories per market are
+kept in the feed file; 180 days in the database.
+
+Filter by sector, event type, item type (news / filing / disclosure) or tone,
+and search headlines, sources and tickers.
+
+### Accuracy signals
+
+Syndicated copies of the same story are collapsed, but the count is kept and
+shown as "N outlets". How many independent outlets carried something is the
+cheapest reality check there is: a genuine market-moving event is picked up
+widely within hours, a single-outlet dramatic headline often is not. Sources
+are always named and linked, so the primary document is one click away.
+
+### Sector news
+
+One targeted news query per sector, in addition to ticker matching, so
+sector-moving stories that never name a tracked company (policy, commodity
+prices, demand data) still land somewhere. The sector board shows news tone,
+1/5-day return and story volume together; each sector is clickable for its
+stories. Daily sector rollups are persisted, so the sentiment history charts
+accumulate real history from the day you deploy.
+
+### Event classification
+
+Every headline is classified into one of ~22 event types — earnings beat/miss,
+guidance, upgrade/downgrade, order win, M&A, buyback, regulatory, insider
+transaction, bulk deal, stake change and so on — by keyword rules, with
+optional LLM refinement of the leftovers. Rules are used because headlines are
+short and the vocabulary of market news is small, stable and auditable.
+
+### Filings and disclosures — and what this will not do
+
+**US** — SEC EDGAR Form 4 (insider transactions by officers, directors and 10%
+holders) and 8-K (material events). Free and official, but the SEC returns
+`403` unless the User-Agent carries a contact email, so set the
+`SEC_CONTACT_EMAIL` secret to switch this on. Nothing is defaulted; your
+address goes only to sec.gov, in the header their policy requires.
+
+**India** — NSE and BSE block datacenter IP ranges, so their filing APIs are
+unreachable from GitHub Actions. The India feed falls back to Moneycontrol
+bulk/block deals, Business Standard, Mint, ET and targeted queries over
+disclosure language. Public, but second-hand and less complete; the UI says so
+on the page.
+
+> **On "inside information".** Everything here is public the moment it is
+> posted — filed with a regulator or reported by an exchange. Reading public
+> filings faster than the news cycle is a legitimate edge. Material non-public
+> information is a different thing entirely: trading on it is illegal under SEC
+> Rule 10b-5 and SEBI's Prohibition of Insider Trading Regulations, and it does
+> not become legal because a journalist, a forum or a group chat passed it on.
+> This project does not source it and will not help you source it.
+
+### Measured event reactions, not invented priors
+
+No free multi-year news archive exists, so no news backtest is possible at
+install time. Instead every classified event on a tracked stock is **logged
+when it happens** and graded once five sessions of forward prices exist. The
+Filings tab then reports, per event type, the mean and median 1/3/5-day return
+and the share that were positive — with the sample size always attached, and
+nothing averaged below 8 observations.
+
+This starts empty and fills in over weeks. That is the honest version: a
+measured statement about a small sample of your own history, never a
+prediction dressed up as one.
+
 ## Optional LLM
 
 Everything works without one. With a key, the LLM re-scores ambiguous
@@ -152,6 +228,12 @@ Whichever key is present is used, in this order:
 | `GROQ_API_KEY` | [Groq](https://console.groq.com/) | generous, very fast |
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey) | generous |
 | `OPENROUTER_API_KEY` | [OpenRouter](https://openrouter.ai/) | `:free` models |
+
+One more optional secret, unrelated to the LLM:
+
+| Secret | What it unlocks |
+|---|---|
+| `SEC_CONTACT_EMAIL` | SEC EDGAR Form 4 and 8-K filings for the US market |
 
 Token use is capped in code: only ambiguous headlines are re-scored, and at
 most 8 lesson explanations per run. A typical full run is a few thousand
@@ -277,14 +359,32 @@ conditions and the charts are more informative than the single number.
 ## Tests
 
 ```bash
+python tests/test_config_env.py           # blank/garbage Actions variables
 python tests/test_pipeline_offline.py     # synthetic data through every module
 npm install && ./dev.sh &                 # then, in another shell:
 PORT=8000 node tests/render-test.mjs      # every view in jsdom, real data
+PORT=8000 node tests/sector-test.mjs      # sector board, tooltips, feed filters
 ```
 
-The render test clicks through all ten views in both markets, opens the stock
-and settings modals, adds a watchlist symbol, and fails on any thrown error,
-empty view, or `NaN` leaking into the page. Both run in CI on every push.
+The render test clicks through all twelve views in both markets, opens the
+stock and settings modals, adds a watchlist symbol, and fails on any thrown
+error, empty view, or `NaN` leaking into the page. The sector test additionally
+asserts that **every colour-encoded cell carries its own numeric label**, so
+the charts never depend on hue alone. All four run in CI on every push.
+
+## Chart colour
+
+Sentiment is a *diverging* measure, so it uses two poles and a neutral
+midpoint rather than a categorical palette — which also sidesteps the fact
+that ten sectors exceed what any categorical palette can keep distinguishable.
+
+Green/red is the domain convention and beats a generic blue/red here, but it
+is the classic colour-vision-deficiency pair. The poles were therefore chosen
+by measurement, not taste, and validated against this app's own surfaces:
+worst adjacent CVD ΔE **8.6 dark / 9.0 light** (≥8 target), normal-vision ΔE
+29.4 / 27.2 (≥15 floor), all steps ≥3:1 contrast. On top of that every cell
+shows its signed value, a legend is always present, and a plain table view of
+the same figures sits below the board.
 
 ## Limitations
 

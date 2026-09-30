@@ -22,16 +22,20 @@ import pandas as pd
 
 import alerts as alerts_mod
 import config
+import disclosures
+import events as events_mod
 import fetch_news
 import fetch_prices
 import llm
 import movers as movers_mod
 import predict as predict_mod
+import reactions
+import scorecard
 import sentiment as sentiment_mod
 import teach
 from config import DATA_DIR, NEWS_WINDOW_DAYS, PREDICT_HORIZON_DAYS
-import scorecard
-from store import (conn, get_meta, prune, save_news, save_prediction, save_quote,
+from store import (conn, get_meta, log_events, prune, recent_news, save_news,
+                   save_prediction, save_quote, save_sector_daily, sector_history,
                    set_meta, upsert_prices)
 from universe import BENCHMARK, CURRENCY, VIX, load_watchlist, sector_of, universe_for
 
@@ -93,11 +97,37 @@ def run_market(cx, market: str, mode: str, model, metrics: dict) -> dict:
     market_sent = {"score": 0.0, "label": "neutral", "count": 0,
                    "bullish": 0, "bearish": 0, "neutral": 0}
 
+    matcher = events_mod.build_matcher(symbols, names)
+    sector_news: dict[str, list[dict]] = {}
+    disclosure_items: list[dict] = []
+
     if mode in ("news", "full"):
         market_news = fetch_news.market_news(market, days=NEWS_WINDOW_DAYS)
         sentiment_mod.score_items(market_news, use_llm=True, llm_budget=25)
+        events_mod.enrich(market_news, matcher, market, use_llm=(mode == "full"))
         market_sent = sentiment_mod.aggregate(market_news)
         save_news(cx, market_news)
+
+        # One query per sector, so sector-moving stories that never name a
+        # tracked ticker still land somewhere.
+        sector_news = fetch_news.sector_news(market, days=NEWS_WINDOW_DAYS)
+        for sector, items in sector_news.items():
+            if not items:
+                continue
+            sentiment_mod.score_items(items, use_llm=False)
+            events_mod.enrich(items, matcher, market, use_llm=False)
+            for it in items:
+                it["sector"] = sector      # the query is the attribution
+            save_news(cx, items)
+
+        # Officially disclosed filings and transactions.
+        disclosure_items = disclosures.fetch(market, days=min(NEWS_WINDOW_DAYS, 5))
+        if disclosure_items:
+            sentiment_mod.score_items(disclosure_items, use_llm=False)
+            events_mod.enrich(disclosure_items, matcher, market, use_llm=False)
+            for it in disclosure_items:
+                it.setdefault("kind", "disclosure")
+            save_news(cx, disclosure_items)
 
         # Per-ticker news only for the watchlist -- one HTTP call per symbol.
         for sym in sorted(watched):
@@ -106,10 +136,18 @@ def run_market(cx, market: str, mode: str, model, metrics: dict) -> dict:
             if not items:
                 continue
             sentiment_mod.score_items(items, use_llm=True, llm_budget=10)
+            events_mod.enrich(items, matcher, market, use_llm=False)
             save_news(cx, items)
             news_by_symbol[sym] = items
             sentiments[sym] = sentiment_mod.aggregate(items)
             time.sleep(0.4)
+
+        # Log every classified event so reactions.py can grade it later.
+        all_items = (market_news + disclosure_items
+                     + [i for v in sector_news.values() for i in v]
+                     + [i for v in news_by_symbol.values() for i in v])
+        logged = reactions.log_from_news(cx, all_items, market)
+        print(f"[{market}] logged {logged} classified events")
     else:
         sentiments = get_meta(cx, f"sentiments:{market}", {})
         market_sent = get_meta(cx, f"market_sent:{market}", market_sent)
@@ -184,6 +222,54 @@ def run_market(cx, market: str, mode: str, model, metrics: dict) -> dict:
             if stale.name not in keep:
                 stale.unlink()
 
+    # The accumulating feed is read back from SQLite, so it holds everything
+    # we have ever seen for this market -- not just what this run fetched.
+    feed = recent_news(cx, market, limit=400)
+
+    # --- sector rollup, persisted so the charts have real history ---------
+    quotes_by_symbol = {q["symbol"]: q for q in quotes}
+    today = datetime.now(timezone.utc).date().isoformat()
+    sector_rows = []
+    sector_story_index: dict[str, list[dict]] = {}
+    for sec in sectors:
+        name = sec["sector"]
+        # Draw from the accumulated store first so a thin fetch on one run
+        # does not empty a sector's panel; top up with this run's results.
+        stories = [n for n in feed if n.get("sector") == name]
+        seen_ids = {n["id"] for n in stories}
+        stories += [n for n in sector_news.get(name, []) + market_news
+                    if n.get("sector") == name and n["id"] not in seen_ids]
+        stories = sorted(stories, key=lambda x: x["published"], reverse=True)[:25]
+        sector_story_index[name] = stories
+        agg = sentiment_mod.aggregate(stories)
+        sector_rows.append({
+            "sector": name, "date": today,
+            "sentiment": agg["score"], "story_count": agg["count"],
+            "bullish": agg["bullish"], "bearish": agg["bearish"],
+            "neutral": agg["neutral"],
+            "ret_1d": sec["ret_1d"], "ret_5d": sec["ret_5d"],
+        })
+        sec["sentiment"] = agg["score"]
+        sec["sentiment_label"] = agg["label"]
+        sec["story_count"] = agg["count"]
+        sec["bullish"] = agg["bullish"]
+        sec["bearish"] = agg["bearish"]
+    if sector_rows:
+        save_sector_daily(cx, market, sector_rows)
+    sector_series = sector_history(cx, market, days=45)
+
+    reactions.grade_pending(cx)
+    event_stats = reactions.summarise(cx, market)
+    catalyst_rows = reactions.catalysts(cx, market, quotes_by_symbol)
+
+    # Newest-first by when WE first saw it, so a refresh adds rather than replaces.
+    write_json(DATA_DIR / market / "feed.json", {
+        "market": market,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "count": len(feed),
+        "items": feed,
+    })
+
     recent_alerts = [dict(r) for r in cx.execute(
         "SELECT ts,symbol,kind,severity,title,body FROM alerts "
         "WHERE market=? ORDER BY id DESC LIMIT 60", (market,)).fetchall()]
@@ -203,6 +289,15 @@ def run_market(cx, market: str, mode: str, model, metrics: dict) -> dict:
         "market_sentiment": market_sent,
         "market_news": market_news[:40],
         "news_by_symbol": {k: v[:8] for k, v in news_by_symbol.items()},
+        "sector_news": {k: v[:12] for k, v in sector_story_index.items()},
+        "sector_series": sector_series,
+        "disclosures": sorted(
+            [n for n in feed if n.get("kind") in ("filing", "disclosure")],
+            key=lambda x: x.get("first_seen") or "", reverse=True)[:80],
+        "catalysts": catalyst_rows,
+        "event_stats": event_stats,
+        "event_status": reactions.status(cx),
+        "feed_count": len(feed),
         "lessons": lessons[:24],
         "alerts": recent_alerts,
         "charts_available": sorted(watched & set(histories)),
@@ -298,6 +393,7 @@ def main() -> int:
         "model_metrics": metrics,
         "scorecard": {k: v for k, v in card.items() if k != "recent"},
         "llm_provider": llm.provider_name(),
+        "sec_filings_enabled": bool(config.SEC_CONTACT_EMAIL),
         "news_window_days": NEWS_WINDOW_DAYS,
         "predict_horizon_days": PREDICT_HORIZON_DAYS,
         "alert_thresholds": {
@@ -311,7 +407,10 @@ def main() -> int:
         "disclaimer": (
             "Educational tool. Not investment advice. Data from public free "
             "sources and may be delayed or wrong. Model probabilities carry a "
-            "measured, small edge at best -- see holdout AUC."
+            "measured, small edge at best -- see holdout AUC. Every filing and "
+            "disclosure shown is public information published by a regulator or "
+            "an exchange; nothing here is or seeks material non-public "
+            "information, which it is illegal to trade on."
         ),
     })
     print(f"[done] failures={failures or 'none'}")

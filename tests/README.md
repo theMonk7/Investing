@@ -37,7 +37,19 @@ modules directly into a jsdom global environment and serves `data/` over
 HTTP.
 
 ```bash
-npm install jsdom          # once
+npm install                # once
 ./dev.sh &                 # serves the repo root on :8000
 PORT=8000 node tests/render-test.mjs
+```
+
+## `sector-test.mjs`
+
+Drills into the sector board: opens a sector panel, fires a hover tooltip,
+exercises the feed's kind filter and search, and asserts that **every
+colour-encoded cell carries a numeric label** and the diverging legend is
+present — the accessibility rule that keeps the charts readable without
+colour.
+
+```bash
+PORT=8000 node tests/sector-test.mjs
 ```

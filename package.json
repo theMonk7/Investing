@@ -5,7 +5,7 @@
   "description": "Dev tooling only. The dashboard itself ships as plain ES modules with no build step.",
   "scripts": {
     "serve": "python3 -m http.server 8000",
-    "test:render": "node tests/render-test.mjs",
+    "test:render": "node tests/render-test.mjs && node tests/sector-test.mjs",
     "test:pipeline": "python3 tests/test_config_env.py && python3 tests/test_pipeline_offline.py"
   },
   "devDependencies": {

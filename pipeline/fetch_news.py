@@ -33,6 +33,32 @@ MARKET_FEEDS = {
     ],
 }
 
+# Per-sector Google News queries. Broad enough to catch sector-moving stories
+# that never name a tracked ticker (policy, commodity prices, demand data).
+SECTOR_QUERIES = {
+    "IN": {
+        "Banks": "Indian banks OR NBFC OR (RBI AND lending) OR (bank AND NPA)",
+        "IT": "Indian IT services OR (TCS OR Infosys OR Wipro) deal OR IT sector hiring",
+        "Auto": "India auto sales OR (car OR two-wheeler) sales India OR EV policy India",
+        "Pharma": "Indian pharma OR USFDA India plant OR drug approval India",
+        "Energy": "India oil gas OR power sector India OR (crude AND India) OR renewable India",
+        "Metals": "India steel OR metal prices India OR (aluminium OR copper) India",
+        "FMCG": "India FMCG demand OR rural consumption India OR consumer staples India",
+        "Financials": "India insurance OR mutual fund India OR housing finance India",
+        "Infra": "India infrastructure OR cement demand India OR real estate India OR defence order India",
+        "Consumer": "India retail OR quick commerce India OR (jewellery OR apparel) India demand",
+    },
+    "US": {
+        "MegaTech": "big tech earnings OR (Apple OR Microsoft OR Google OR Amazon OR Meta) stock",
+        "Semis": "semiconductor stocks OR chip demand OR (Nvidia OR AMD) OR chip export rules",
+        "Financials": "US banks OR (Fed AND rates AND banks) OR credit conditions",
+        "Healthcare": "US healthcare stocks OR FDA approval OR drug pricing policy",
+        "Energy": "oil prices OR US energy stocks OR OPEC output",
+        "Consumer": "US consumer spending OR retail sales OR (Walmart OR Costco)",
+        "Software": "enterprise software stocks OR SaaS earnings OR cloud spending",
+    },
+}
+
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -97,6 +123,24 @@ def market_news(market: str, days: int = NEWS_WINDOW_DAYS,
     return _dedupe(out)
 
 
+def sector_news(market: str, days: int = NEWS_WINDOW_DAYS,
+                limit: int = 15) -> dict[str, list[dict]]:
+    """One Google News query per sector. Cheap: a handful of requests total."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    locale = ("hl=en-IN&gl=IN&ceid=IN:en" if market == "IN"
+              else "hl=en-US&gl=US&ceid=US:en")
+    out: dict[str, list[dict]] = {}
+    for sector, query in SECTOR_QUERIES.get(market, {}).items():
+        url = (f"https://news.google.com/rss/search?q={quote_plus(query)}"
+               f"+when:{days}d&{locale}")
+        items = _parse(url, "Google News (sector)", "__MARKET__", market, cutoff, limit)
+        for it in items:
+            it["sector"] = sector          # query-level attribution, trusted
+        out[sector] = _dedupe(items)
+        time.sleep(0.35)
+    return out
+
+
 def symbol_news(symbol: str, market: str, company_name: str = "",
                 days: int = NEWS_WINDOW_DAYS, limit: int = 20) -> list[dict]:
     """Google News query per ticker. One request, no key, works for NSE names."""
@@ -122,13 +166,22 @@ def symbol_news(symbol: str, market: str, company_name: str = "",
 
 
 def _dedupe(items: list[dict]) -> list[dict]:
-    """Same story syndicated across outlets -- collapse on normalised title."""
-    seen: set[str] = set()
-    out = []
+    """Collapse syndicated copies, but keep the count.
+
+    How many independent outlets carried a story is a genuine signal about
+    whether it matters and whether it is real, so the duplicates are counted
+    into `corroboration` rather than thrown away.
+    """
+    kept: dict[str, dict] = {}
     for it in sorted(items, key=lambda x: x["published"], reverse=True):
         key = re.sub(r"[^a-z0-9]", "", it["title"].lower())[:70]
-        if key in seen:
+        if key in kept:
+            first = kept[key]
+            first["corroboration"] = first.get("corroboration", 1) + 1
+            sources = first.setdefault("also_in", [])
+            if it["source"] not in sources and it["source"] != first["source"]:
+                sources.append(it["source"])
             continue
-        seen.add(key)
-        out.append(it)
-    return out
+        it.setdefault("corroboration", 1)
+        kept[key] = it
+    return list(kept.values())

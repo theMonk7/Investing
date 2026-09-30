@@ -89,5 +89,11 @@ GEMINI_MODEL = env_str("GEMINI_MODEL", "gemini-2.0-flash")
 OPENROUTER_API_KEY = env_str("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = env_str("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
 
+# --- SEC EDGAR --------------------------------------------------------------
+# The SEC requires a User-Agent containing a real contact email and returns
+# 403 without one. Deliberately not defaulted to anything: set it yourself and
+# the US filings feed switches on; leave it blank and that feed is skipped.
+SEC_CONTACT_EMAIL = env_str("SEC_CONTACT_EMAIL")
+
 HTTP_TIMEOUT = env_int("HTTP_TIMEOUT", 25)
 USER_AGENT = "Mozilla/5.0 (compatible; investing-dashboard/1.0)"

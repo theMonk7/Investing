@@ -25,6 +25,7 @@ for (const k of ['window', 'document', 'location', 'Node', 'MouseEvent',
 }
 globalThis.structuredClone ??= (o) => JSON.parse(JSON.stringify(o));
 globalThis.setInterval = () => 0;                       // no background polling in the test
+globalThis.HTMLElement = window.HTMLElement;
 
 const realFetch = globalThis.fetch;
 globalThis.fetch = (input, init) =>
@@ -56,6 +57,9 @@ for (const market of ['IN', 'US']) {
     const chars = main.textContent.trim().length;
     report.push(`${market}/${v.padEnd(10)} nodes=${String(nodes).padStart(5)} chars=${String(chars).padStart(6)}`);
     if (nodes < 25) errors.push(`${market}/${v} rendered almost nothing (${nodes} nodes)`);
+    if (/Nothing here yet\.$/.test(main.textContent.trim()) && v !== 'alerts') {
+      errors.push(`${market}/${v} rendered only the empty state`);
+    }
   }
 }
 

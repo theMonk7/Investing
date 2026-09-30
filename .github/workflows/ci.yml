@@ -46,3 +46,7 @@ jobs:
         env:
           PORT: 8000
         run: node tests/render-test.mjs
+      - name: Sector board, tooltips and feed filters
+        env:
+          PORT: 8000
+        run: node tests/sector-test.mjs

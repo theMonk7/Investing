@@ -306,3 +306,117 @@ code { background: var(--bg-elev-2); padding: 1.5px 5px; border-radius: 4px;
   .stamp { display: none; }
   #chart { height: 300px; }
 }
+
+/* =================================================================== viz ==
+   Diverging scale for sentiment. Poles validated with the dataviz skill's
+   six checks against this app's own surfaces (#0b0e14 dark / #f6f8fc light):
+   all pass, worst adjacent CVD deltaE 8.6 dark / 9.0 light.
+   Green/red is the domain convention and beats a generic blue/red here, but
+   it is the classic CVD-risk pair, so EVERY cell also carries its signed
+   number and a +/- glyph. Color never carries meaning alone.            */
+:root {
+  --viz-bull: #17936a;
+  --viz-bear: #e34948;
+  --viz-mid: #2b3444;
+  --viz-grid: #1c2432;
+  --viz-ink: #93a1b8;
+}
+:root[data-theme="light"] {
+  --viz-bull: #0f855c;
+  --viz-bear: #cf4433;
+  --viz-mid: #e8ecf3;
+  --viz-grid: #e4e9f1;
+  --viz-ink: #52627a;
+}
+
+.legend {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 11px; color: var(--text-faint); margin-bottom: 12px; flex-wrap: wrap;
+}
+.legend .scale {
+  width: 130px; height: 9px; border-radius: 5px;
+  background: linear-gradient(90deg, var(--viz-bear), var(--viz-mid), var(--viz-bull));
+}
+.legend .swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+/* ---------------------------------------------------------- sector board */
+.board { display: grid; gap: 2px; }          /* 2px surface gap between cells */
+.board-row {
+  display: grid; grid-template-columns: 132px 1fr repeat(4, 74px);
+  gap: 2px; align-items: stretch;
+}
+.board-head { font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-faint); font-weight: 700; padding: 0 8px 6px; text-align: right; }
+.board-head:first-child, .board-head:nth-child(2) { text-align: left; }
+
+.cell {
+  padding: 9px 10px; border-radius: 6px; font-size: 12.5px;
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  text-align: right; color: #fff; font-weight: 620; position: relative;
+  display: flex; align-items: center; justify-content: flex-end;
+}
+.cell.label {
+  background: var(--bg-elev-2); color: var(--text); text-align: left;
+  font-family: var(--sans); justify-content: flex-start; font-weight: 600;
+  cursor: pointer;
+}
+.cell.label:hover { background: var(--border); }
+.cell.spark { background: var(--bg-elev-2); padding: 4px 8px; }
+.cell[data-v] { cursor: default; }
+.cell.zero { background: var(--viz-mid); color: var(--text-dim); }
+
+.sector-panel { margin-top: 2px; padding: 14px 16px; background: var(--bg-elev-2);
+  border-radius: 8px; }
+
+/* -------------------------------------------------------------- news feed */
+.feed-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+  margin-bottom: 14px; }
+.feed-controls select, .feed-controls input { font-size: 12.5px; padding: 6px 9px; }
+
+.news-item.is-new { position: relative; padding-left: 12px; }
+.news-item.is-new::before {
+  content: ""; position: absolute; left: 0; top: 14px;
+  width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.tag {
+  display: inline-flex; align-items: center; gap: 4px; padding: 1.5px 7px;
+  border-radius: 5px; font-size: 10.5px; font-weight: 660; letter-spacing: .01em;
+  background: var(--bg-elev-2); color: var(--text-dim); border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.tag.bull { color: var(--viz-bull); border-color: color-mix(in srgb, var(--viz-bull) 40%, transparent); }
+.tag.bear { color: var(--viz-bear); border-color: color-mix(in srgb, var(--viz-bear) 40%, transparent); }
+.tag.filing { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 40%, transparent); }
+
+.corrob { font-size: 10.5px; color: var(--text-faint); }
+
+/* --------------------------------------------------------------- tooltip */
+.viz-tip {
+  position: fixed; z-index: 300; pointer-events: none;
+  background: var(--bg-elev); border: 1px solid var(--border-strong);
+  border-radius: 8px; padding: 9px 11px; font-size: 12px; line-height: 1.55;
+  box-shadow: var(--shadow); max-width: 260px;
+}
+.viz-tip b { display: block; margin-bottom: 3px; }
+.viz-tip .num { font-family: var(--mono); }
+
+/* --------------------------------------------------------- small multiples */
+.multiples { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 12px; }
+.multiple { background: var(--bg-elev-2); border-radius: 8px; padding: 10px 12px; }
+.multiple .t { font-size: 11.5px; font-weight: 640; margin-bottom: 2px; }
+.multiple .v { font-size: 17px; font-weight: 680; font-family: var(--mono); }
+.multiple .s { font-size: 10.5px; color: var(--text-faint); margin-top: 2px; }
+
+.hbar { display: grid; grid-template-columns: 124px 1fr 54px; gap: 10px;
+  align-items: center; margin-bottom: 7px; font-size: 12.5px; }
+.hbar .track { height: 14px; background: var(--bg-elev-2); border-radius: 4px;
+  overflow: hidden; }
+.hbar .track > i { display: block; height: 100%; border-radius: 4px; }
+
+@media (max-width: 900px) {
+  .board-row { grid-template-columns: 96px 1fr repeat(3, 58px); }
+  .board-row > .cell:nth-child(6) { display: none; }
+  .board-head:nth-child(6) { display: none; }
+}
