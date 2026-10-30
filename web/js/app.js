@@ -2,6 +2,8 @@
 
 import * as calendar from './calendar.js';
 import * as gh from './gh.js';
+import { pageHead } from './guides.js';
+import * as learn from './learn.js';
 import { $, $$, ago, card, display, el, lsGet, lsSet, modal, pill, toast } from './lib.js';
 import * as local from './local.js';
 import * as newsViews from './news-views.js';
@@ -24,10 +26,10 @@ async function resolveDataBase() {
 const VIEWS = {
   watchlist: views.watchlist, news: newsViews.newsFeed, calendar: calendar.calendar,
   market: views.market, ideas: views.ideas, model: views.model, alerts: views.alerts,
-  sectornews: newsViews.sectorNews, filings: newsViews.filings, learn: views.learn,
+  sectornews: newsViews.sectorNews, filings: newsViews.filings, learn: learn.learnView,
   about: views.about,
 };
-const MAIN_TABS = ['watchlist', 'news', 'calendar', 'market'];
+const MAIN_TABS = ['watchlist', 'news', 'calendar', 'market', 'learn'];
 // Old bookmarks keep working.
 const ALIASES = { overview: 'market', movers: 'market', sectors: 'market' };
 const MARKET_NAME = { IN: 'India', US: 'US' };
@@ -45,6 +47,26 @@ const syncMode = () => {
   return gh.configured() ? 'github' : 'readonly';
 };
 const UNSYNCED_KEY = 'mktdesk.watchlist.unsynced';
+const FIX_ACCESS = { label: 'Fix access', onClick: () => openSettings({ check: true }) };
+const blocked = () => syncMode() === 'github' && gh.dispatchBlocked();
+
+/** Gate for updates the user asked for; explains instead of failing again. */
+function canFetch() {
+  if (local.available()) return true;
+  if (!gh.configured()) { openSettings(); return false; }
+  if (gh.dispatchBlocked()) { openSettings({ check: true }); return false; }
+  return true;
+}
+
+/** Follow-up runs after a save: skipped with a note when the token cannot start them. */
+function queueRun(opts) {
+  if (blocked()) {
+    toast('Saved. This token cannot start updates, so data arrives with the next scheduled run.',
+      'info', FIX_ACCESS);
+    return;
+  }
+  sync.request(opts);
+}
 
 const state = {
   market: lsGet('mktdesk.market', 'IN'),
@@ -213,7 +235,7 @@ async function retrySync({ quiet = false } = {}) {
   setUnsynced(false);
   const todo = [...state.watchlist.IN, ...state.watchlist.US].filter(missingQuote);
   if (todo.length) {
-    sync.request({ mode: 'quick', markets: [...new Set(todo.map(marketOf))], symbols: todo,
+    queueRun({ mode: 'quick', markets: [...new Set(todo.map(marketOf))], symbols: todo,
       label: todo.map(display).join(', ') });
   }
   if (!quiet) toast('Watchlist synced to GitHub', 'ok');
@@ -244,7 +266,7 @@ async function addSymbols(raws) {
   try {
     // Commit first: the run reads watchlist.json to decide what to keep.
     await commitWatchlist(`chore: watch ${syms.join(', ')}`);
-    sync.request({
+    queueRun({
       mode: 'quick', markets: [...new Set(added.map((a) => a.market))], symbols: syms,
       label: syms.map(display).join(', '),
     });
@@ -268,7 +290,7 @@ async function removeSymbol(sym) {
 
 /** Fetch prices, news and events for tickers without watching them. */
 function fetchSymbols(raws, what = 'data') {
-  if (!canUpdate()) { openSettings(); return; }
+  if (!canFetch()) return;
   const list = raws.map(normalise).filter(Boolean);
   if (!list.length) return;
   sync.request({
@@ -280,34 +302,69 @@ function fetchSymbols(raws, what = 'data') {
 }
 
 function updateWatchlist() {
-  if (!canUpdate()) { openSettings(); return; }
   const syms = state.watchlist[state.market];
-  if (!syms.length) return;
+  if (!syms.length) { toast('Your watchlist is empty. Add a ticker first.'); return; }
+  if (!canFetch()) return;
   sync.request({ mode: 'quick', markets: [state.market], symbols: syms,
     label: `${MARKET_NAME[state.market]} watchlist` });
   render();
 }
 
 function fetchEvents() {
-  if (!canUpdate()) { openSettings(); return; }
+  if (!canFetch()) return;
   sync.request({ mode: 'events', markets: [state.market],
     label: `${MARKET_NAME[state.market]} calendar` });
   render();
 }
 
-/** Refresh: show whatever is committed now, then fetch fresh data. */
-async function refresh() {
+function fetchNews() {
+  if (!canFetch()) return;
+  sync.request({ mode: 'news', markets: [state.market],
+    label: `${MARKET_NAME[state.market]} news` });
+  render();
+}
+
+/** Re-read the saved data files. Instant, and never needs a token. */
+async function reloadData() {
   const btn = $('#refreshBtn');
   btn.classList.add('spinning');
-  try { await loadAll(); render(); }
-  finally { btn.classList.remove('spinning'); }
-  if (!canUpdate()) {
-    toast('Reloaded the published data. Connect GitHub (⚙) or run ./dev.sh to fetch fresh data.');
-    return;
+  try {
+    await loadAll();
+    render();
+    toast(`Reloaded · data from ${ago(state.bundles[state.market]?.generated_at)}`, 'ok');
+  } catch (err) {
+    toast(`Reload failed: ${err.message}`, 'error');
+  } finally {
+    btn.classList.remove('spinning');
   }
   await retrySync({ quiet: true });
-  sync.request({ mode: 'news', markets: [state.market],
-    label: `${MARKET_NAME[state.market]} refresh` });
+}
+
+// ------------------------------------------------------------ refresh menu
+function refreshItems() {
+  const m = MARKET_NAME[state.market];
+  const via = !canUpdate() ? 'connect GitHub or run ./dev.sh'
+    : blocked() ? 'token needs Actions access'
+    : syncMode() === 'local' ? 'runs on this machine' : '1–2 min on GitHub';
+  return [
+    ['reload', 'Reload data', 'Show the latest saved files · instant', reloadData],
+    ['news', 'Fetch latest news', `${m} headlines, filings and calendar · ${via}`, fetchNews],
+    ['watchlist', 'Update watchlist', `Prices, charts and news for your ${m} tickers · ${via}`, updateWatchlist],
+    ['calendar', 'Refresh calendar', `${m} results, board meetings, dividends · ${via}`, fetchEvents],
+  ];
+}
+
+function toggleRefreshMenu(open) {
+  const list = $('#refreshList');
+  const show = open ?? !list.classList.contains('open');
+  if (show) {
+    list.replaceChildren(...refreshItems().map(([id, label, sub, fn]) => el('button', {
+      'data-action': id,
+      onclick: () => { list.classList.remove('open'); fn(); },
+    }, el('span', {}, label), el('small', {}, sub))));
+  }
+  list.classList.toggle('open', show);
+  $('#refreshBtn').setAttribute('aria-expanded', show);
 }
 
 // ------------------------------------------------------------------ context
@@ -329,8 +386,9 @@ function context() {
     pending: new Set([...sync.pendingSymbols(), ...state.saving]),
     syncBusy: sync.busy(),
     addSymbol: (sym) => addSymbols([sym]),
-    addSymbols, removeSymbol, fetchSymbols, fetchEvents, updateWatchlist, openSettings,
+    addSymbols, removeSymbol, fetchSymbols, fetchEvents, fetchNews, updateWatchlist, openSettings,
     normalise, loadChart,
+    openConcept: (id) => learn.openConcept(context(), id),
     rerender: render,
     go: navigate,
     openStock: (sym) => views.stockDetail(context(), sym),
@@ -356,7 +414,8 @@ function render() {
     return;
   }
 
-  main.replaceChildren(VIEWS[state.view](context()));
+  const ctx = context();
+  main.replaceChildren(pageHead(state.view, ctx), VIEWS[state.view](ctx));
 
   const count = (bundle.alerts ?? []).filter(
     (a) => Date.now() - new Date(a.ts).getTime() < 86400e3).length;
@@ -400,8 +459,14 @@ function updateChip() {
     && Date.now() - Date.parse(job.startedAt) < 3600e3;
   if (failed && canUpdate()) {
     chip.className = 'sync-chip failed';
-    chip.textContent = 'Update failed · retry';
+    chip.textContent = job.authError ? 'Update refused · fix token' : 'Update failed · retry';
     chip.title = job.error || `Run ended: ${job.conclusion}`;
+    return;
+  }
+  if (blocked()) {
+    chip.className = 'sync-chip warn';
+    chip.textContent = `Updated ${ago(stamp)} · can't fetch`;
+    chip.title = 'This GitHub token can read data but cannot start updates. Click to see how to fix it.';
     return;
   }
   const mode = syncMode();
@@ -420,10 +485,12 @@ function onChipClick() {
     if (job.url) window.open(job.url, '_blank', 'noopener');
   } else if (!canUpdate()) {
     openSettings();
+  } else if (blocked() || job?.authError) {
+    openSettings({ check: true });
   } else if ($('#syncChip').classList.contains('failed')) {
     sync.retry();
   } else {
-    refresh();
+    toggleRefreshMenu(true);
   }
 }
 
@@ -433,7 +500,11 @@ function onSyncChange(job) {
   updateChip();
   if (!job || job.status !== 'completed' || job.requestId === lastReported) return;
   lastReported = job.requestId;
-  if (job.conclusion !== 'success' && job.conclusion !== 'cancelled') {
+  if (job.authError) {
+    // Record what the token can do so later clicks explain instead of failing.
+    gh.checkAccess().then(updateChip).catch(() => {});
+    toast(job.error, 'error', FIX_ACCESS);
+  } else if (job.conclusion !== 'success' && job.conclusion !== 'cancelled') {
     toast(job.error || `Update ${job.conclusion ?? 'failed'}. Open the run from the status chip.`, 'error');
   }
   // Swap "Fetching…" placeholders back, unless the user is mid-typing.
@@ -453,7 +524,73 @@ async function onSyncSuccess(job) {
 }
 
 // ----------------------------------------------------------------- settings
-function openSettings() {
+const ext = (href, text) => el('a', { href, target: '_blank', rel: 'noopener noreferrer' }, text);
+
+/** Ordered steps that get this token from what it can do to what it needs. */
+function accessFix(a) {
+  const owner = gh.settings().owner;
+  if (!a.valid) {
+    return ['GitHub rejected the token: it is mistyped, expired or revoked. Create a new one '
+      + '(steps below), paste it above and press Save & connect.'];
+  }
+  const steps = [];
+  if (a.repoFound === false) steps.push(`GitHub cannot find ${a.repo}. Check the Owner and Repository fields.`);
+  if (a.workflow === false) {
+    steps.push(['The workflow file is not on GitHub yet. Push your local changes (',
+      el('code', {}, 'git push'), ') so ', el('code', {}, '.github/workflows/pipeline.yml'), ' exists.']);
+  }
+  const needs = [a.contents === false && 'Contents', a.actions === false && 'Actions'].filter(Boolean);
+  if (!needs.length) return steps;
+
+  if (a.push === false && a.login?.toLowerCase() !== owner.toLowerCase()) {
+    steps.push(`Your account (${a.login}) cannot write to ${a.repo}. Use a token from the `
+      + `${owner} account, or ask to be added as a collaborator.`);
+  }
+  if (a.kind === 'classic') {
+    steps.push(`This is a classic token with scopes: ${a.scopes || 'none'}. It needs the "repo" scope.`,
+      ['Open ', ext('https://github.com/settings/tokens', 'github.com/settings/tokens'),
+        ', edit the token, tick ', el('b', {}, 'repo'), ' and save. Or switch to a fine-grained token (safer).'],
+      'Click Check access again.');
+    return steps;
+  }
+  steps.push(
+    ['Open ', ext('https://github.com/settings/personal-access-tokens', 'github.com/settings/personal-access-tokens'),
+      ' and edit this token (a fine-grained token, the ', el('code', {}, 'github_pat_'), ' kind).'],
+    ['Repository access: ', el('b', {}, 'Only select repositories'), ' → ', el('b', {}, a.repo),
+      `. The resource owner must be ${owner}; if it is not, generate a new token instead.`],
+    ['Repository permissions: set ', el('b', {}, 'Contents'), ' and ', el('b', {}, 'Actions'),
+      ' to ', el('b', {}, 'Read and write'), `. Missing now: ${needs.join(' and ')}.`],
+    'Save. The token value does not change, so just click Check access again here.');
+  return steps;
+}
+
+function accessReport(a) {
+  const row = (ok, label, detail) => el('div', { class: `check ${ok === true ? 'ok' : ok === false ? 'bad' : 'unknown'}` },
+    el('span', { class: 'mark' }, ok === true ? '✓' : ok === false ? '✕' : '?'),
+    el('div', {}, el('div', {}, label), detail ? el('div', { class: 'faint' }, detail) : null));
+  const rows = [row(a.valid, 'Token is valid',
+    a.valid ? `Signed in as ${a.login} · ${a.kind} token` : 'Rejected by GitHub')];
+  if (a.valid) {
+    rows.push(
+      row(a.repoFound, `Repository ${a.repo}`, a.repoFound ? 'found' : 'not found'),
+      row(a.workflow, 'Pipeline workflow', a.workflow ? 'pipeline.yml is on GitHub' : 'missing on GitHub'),
+      row(a.contents, 'Save the watchlist', 'needs Contents: Read and write'),
+      row(a.actions, 'Start updates (Refresh, Update, new tickers)', a.actions === null && !a.workflow
+        ? 'cannot test until the workflow exists' : 'needs Actions: Read and write'));
+  }
+  const steps = accessFix(a);
+  return el('div', { class: 'access' },
+    ...rows,
+    steps.length
+      ? el('div', { class: 'access-fix' }, el('b', {}, 'How to fix'),
+          el('ol', {}, ...steps.map((s) => el('li', {}, s))))
+      : el('p', { class: 'up', style: 'margin:10px 0 0;font-size:12.5px' },
+          'All set: adding tickers, Fetch latest news and Update will work.'),
+    el('div', { class: 'faint', style: 'font-size:11px;margin-top:8px' }, `Checked ${ago(a.at)}. `
+      + 'The check changes nothing: GitHub rejects its test requests either way.'));
+}
+
+function openSettings({ check = false } = {}) {
   const s = gh.settings();
   const guess = gh.guessRepo();
   const owner = el('input', { type: 'text', value: s.owner || guess?.owner || '', placeholder: 'your-github-username' });
@@ -472,24 +609,44 @@ function openSettings() {
   Object.assign(repo.style, { width: '100%' });
   Object.assign(token.style, { width: '100%' });
 
+  const last = gh.configured() ? gh.lastAccess() : null;
+  const accessBox = el('div', { class: 'access-box' }, last ? accessReport(last) : null);
+  const runCheck = async () => {
+    accessBox.replaceChildren(el('div', { class: 'faint' }, 'Checking what this token can do…'));
+    try {
+      const a = await gh.checkAccess();
+      accessBox.replaceChildren(accessReport(a));
+      updateChip();
+      return a;
+    } catch (err) {
+      accessBox.replaceChildren(el('div', { class: 'down' }, `Check failed: ${err.message}`));
+      return null;
+    }
+  };
+
   const connect = async () => {
     gh.saveSettings({ owner: owner.value.trim(), repo: repo.value.trim(),
       branch: branch.value.trim() || 'main', token: token.value.trim() });
     status.textContent = 'Checking…';
+    const a = await runCheck();
+    if (!a?.valid || !a.repoFound) {
+      status.textContent = 'Could not connect. See the checklist below.';
+      return;
+    }
+    if (!a.contents) {
+      status.textContent = `Reading ${a.repo}. Saving and updates need the fixes below.`;
+      await loadAll();
+      render();
+      return;
+    }
     try {
-      const info = await gh.testConnection();
-      if (!info.permissions?.push) {
-        status.textContent = `Reached ${info.full_name}, but the token cannot write. `
-          + 'Give it Contents: read and write.';
-        return;
-      }
-      status.textContent = `Connected to ${info.full_name}. Syncing watchlist…`;
+      status.textContent = `Connected to ${a.repo}. Syncing watchlist…`;
       const extras = await adoptRemoteWatchlist();
       setUnsynced(false);
       await loadAll();
       render();
-      status.textContent = `Connected to ${info.full_name}.`
-        + (extras.length ? ` Added ${extras.map(display).join(', ')} from this browser and started fetching.` : '');
+      status.textContent = `Connected to ${a.repo}.`
+        + (extras.length ? ` Added ${extras.map(display).join(', ')} from this browser.` : '');
     } catch (err) {
       status.textContent = `Could not connect: ${err.message}`;
     }
@@ -523,11 +680,16 @@ function openSettings() {
       el('div', { class: 'row' },
         el('button', { class: 'btn primary', onclick: connect }, 'Save & connect'),
         gh.configured()
+          ? el('button', { class: 'btn', id: 'checkAccess', onclick: runCheck }, 'Check access')
+          : null,
+        gh.configured()
           ? el('button', {
               class: 'btn',
               onclick: () => {
                 gh.saveSettings({ token: '' });
+                gh.forgetAccess();
                 token.value = '';
+                accessBox.replaceChildren();
                 status.textContent = 'Disconnected. The token was removed from this browser.';
                 loadAll().then(render);
               },
@@ -538,11 +700,13 @@ function openSettings() {
               class: 'btn',
               title: 'Prices, news, model retrain and calendar for both markets. Takes ~10 minutes.',
               onclick: () => {
+                if (!canFetch()) return;
                 sync.request({ mode: 'full', markets: ['IN', 'US'], label: 'full rebuild' });
                 toast('Full rebuild queued', 'ok');
               },
             }, 'Run full rebuild')
-          : null)),
+          : null),
+      accessBox),
 
     card('Phone alerts', 'configured in the repo, not here',
       el('p', { class: 'dim', style: 'font-size:12.5px;line-height:1.8;margin:0' },
@@ -565,6 +729,7 @@ function openSettings() {
             location.reload();
           },
         }, 'Reset all local data'))));
+  if (check && gh.configured()) runCheck();
 }
 
 /** On connect the repo's watchlist wins, but tickers added in this browser
@@ -584,7 +749,7 @@ async function adoptRemoteWatchlist() {
   saveLocally();
   if (extras.length) {
     await commitWatchlist(`chore: watch ${extras.join(', ')}`);
-    sync.request({ mode: 'quick', markets: [...new Set(extras.map(marketOf))],
+    queueRun({ mode: 'quick', markets: [...new Set(extras.map(marketOf))],
       symbols: extras, label: extras.map(display).join(', ') });
   }
   return extras;
@@ -615,6 +780,7 @@ function wire() {
   });
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.more')) more.classList.remove('open');
+    if (!e.target.closest('#refreshMenu') && !e.target.closest('#syncChip')) toggleRefreshMenu(false);
   });
 
   $$('#marketSwitch button').forEach((b) => b.addEventListener('click', () => {
@@ -630,7 +796,7 @@ function wire() {
   });
 
   $('#settingsBtn').addEventListener('click', openSettings);
-  $('#refreshBtn').addEventListener('click', refresh);
+  $('#refreshBtn').addEventListener('click', () => toggleRefreshMenu());
   $('#syncChip').addEventListener('click', onChipClick);
 
   window.addEventListener('hashchange', () => {
@@ -639,7 +805,7 @@ function wire() {
   });
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') more.classList.remove('open');
+    if (e.key === 'Escape') { more.classList.remove('open'); toggleRefreshMenu(false); }
     if (e.target.matches('input, textarea, select')) return;
     if (e.key === 'm') {
       state.market = state.market === 'IN' ? 'US' : 'IN';

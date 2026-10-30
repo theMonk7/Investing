@@ -174,6 +174,65 @@ if (!allNews) errors.push('news view shows no stories in All');
 if (!newsUnknown) errors.push('unknown ticker banner missing on news');
 type(doc.querySelector('#newsTickers'), '');
 
+// Page guides: every view has a header with a working "How to read this page".
+for (const v of views) {
+  click(doc.querySelector(`#nav [data-view="${v}"]`));
+  await sleep(60);
+  const btn = doc.querySelector('#main .page-head #guideBtn');
+  if (!btn) { errors.push(`${v}: page header / guide button missing`); continue; }
+  click(btn);
+  await sleep(40);
+  const d = doc.querySelector('.drawer');
+  if (!d) { errors.push(`${v}: guide drawer did not open`); continue; }
+  const metrics = d.querySelectorAll('.g-metric').length;
+  if (v !== 'about' && metrics < 2) errors.push(`${v}: guide has only ${metrics} metrics`);
+  if (/NaN|undefined|\[object Object\]/.test(d.textContent)) errors.push(`${v}: guide has bad values`);
+  const learnLink = d.querySelector('.g-learn');
+  if (learnLink) {
+    click(learnLink);
+    await sleep(40);
+    if (!doc.querySelector('.modal .concept')) errors.push(`${v}: guide "Learn" link did not open a concept`);
+  }
+  doc.querySelector('#modalRoot').replaceChildren();
+}
+report.push(`guides: checked ${views.length} pages`);
+
+// Learn: concept of the day, quiz feedback, mark as learned, library.
+localStorage.removeItem('mktdesk.learn');
+click(doc.querySelector('#nav [data-view="learn"]'));
+await sleep(80);
+const concept = doc.querySelector('#main .today-concept .concept');
+if (!concept) errors.push('learn: no concept of the day');
+else {
+  const firstTitle = concept.querySelector('.c-title').textContent;
+  click(concept.querySelector('.q-opt'));
+  await sleep(20);
+  if (!concept.querySelector('.q-feedback').textContent.trim()) errors.push('learn: quiz gave no feedback');
+  click(concept.querySelector('[data-learn]'));
+  await sleep(60);
+  const learned = JSON.parse(localStorage.getItem('mktdesk.learn') || '{}').learned ?? {};
+  if (!Object.keys(learned).length) errors.push('learn: mark as learned did not persist');
+  click(doc.querySelector('#nextConcept'));
+  await sleep(60);
+  const nextTitle = doc.querySelector('#main .today-concept .c-title')?.textContent;
+  if (nextTitle === firstTitle) errors.push('learn: Next concept did not advance');
+  const lib = doc.querySelectorAll('#main .lib-item').length;
+  const done = doc.querySelectorAll('#main .lib-item.done').length;
+  report.push(`learn: "${firstTitle}" → "${nextTitle}", library ${lib} (${done} done)`);
+  if (lib < 20 || done !== 1) errors.push(`learn: library count off (${lib} items, ${done} done)`);
+}
+localStorage.removeItem('mktdesk.learn');
+
+// Refresh menu.
+click(doc.querySelector('#refreshBtn'));
+await sleep(20);
+const actions = [...doc.querySelectorAll('#refreshList [data-action]')].map((b) => b.dataset.action);
+report.push(`refresh menu: ${actions.join(', ')}`);
+for (const a of ['reload', 'news', 'watchlist', 'calendar']) {
+  if (!actions.includes(a)) errors.push(`refresh menu missing "${a}"`);
+}
+click(doc.body);
+
 // Scan every rendered view for obviously broken output.
 for (const v of views) {
   click(doc.querySelector(`#nav [data-view="${v}"]`));

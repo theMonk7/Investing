@@ -467,55 +467,6 @@ function newsItem(n) {
       n.scored_by?.startsWith('llm') ? pill('LLM-scored', 'info') : null));
 }
 
-// ------------------------------------------------------------------- learn
-export function learn(ctx) {
-  const lessons = ctx.bundle.lessons ?? [];
-  const curriculum = ctx.curriculum ?? [];
-  const frag = el('div');
-
-  frag.append(card('Explained: what happened today',
-    `${lessons.length} events detected`,
-    lessons.length
-      ? el('div', {}, ...lessons.map((l) => lessonBlock(l, ctx)))
-      : el('div', { class: 'empty' }, 'Nothing unusual happened, so there is nothing to explain. '
-          + 'Lessons appear when a stock moves sharply, volume spikes, RSI hits an extreme, '
-          + 'or news clusters.')));
-
-  const levels = ['beginner', 'intermediate', 'advanced'];
-  for (const level of levels) {
-    const items = curriculum.filter((c) => c.level === level);
-    if (!items.length) continue;
-    frag.append(card(level[0].toUpperCase() + level.slice(1), `${items.length} lessons`,
-      ...items.map((c) => el('details', { class: 'accordion' },
-        el('summary', {}, c.title,
-          el('span', { style: 'flex:1' }),
-          ...c.tags.map((t) => pill(t, 'neutral'))),
-        el('div', { class: 'body' }, c.body)))));
-  }
-  return frag;
-}
-
-function lessonBlock(l, ctx) {
-  return el('div', { class: `lesson ${l.severity}` },
-    el('h4', {}, l.headline),
-    el('p', {}, l.explanation),
-    el('div', { class: 'row meta' },
-      pill(l.kind.replace(/_/g, ' '), 'neutral'),
-      el('span', {}, ago(l.ts)),
-      el('span', {}, l.source?.startsWith('llm') ? `explained by ${l.source}` : 'rule-generated'),
-      el('button', { class: 'btn sm', onclick: () => stockDetail(ctx, l.symbol) }, 'Chart'),
-      ...(l.related_lessons ?? []).map((id) => {
-        const lesson = (ctx.curriculum ?? []).find((c) => c.id === id);
-        return lesson
-          ? el('button', {
-              class: 'btn sm',
-              onclick: () => modal(lesson.title,
-                el('p', { class: 'dim', style: 'line-height:1.75;white-space:pre-wrap' }, lesson.body)),
-            }, `📖 ${lesson.title}`)
-          : null;
-      })));
-}
-
 // ------------------------------------------------------------------- about
 export function about(ctx) {
   const meta = ctx.meta ?? {};

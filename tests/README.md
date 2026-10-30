@@ -37,7 +37,9 @@ Loads the real dashboard in jsdom against the committed `data/` snapshots,
 clicks through every view in both markets, opens the stock and settings
 modals, adds and removes a watchlist ticker (including one with no data yet),
 exercises the calendar's window/scope/type/ticker filters and the news
-ticker filter, and fails on any thrown error, empty view,
+ticker filter, opens the ⓘ guide drawer on every page (and its "Learn"
+links), answers a Learn quiz, marks a concept learned and advances to the
+next, checks the ⟳ menu items, and fails on any thrown error, empty view,
 or `NaN` / `undefined` leaking into the rendered text.
 
 jsdom does not execute `<script type="module">`, so the test imports the

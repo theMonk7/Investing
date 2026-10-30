@@ -180,14 +180,34 @@ export function lsSet(key, value) {
   catch { return false; }
 }
 
-export function toast(message, kind = 'info') {
+export function toast(message, kind = 'info', action = null) {
   const node = el('div', {
-    class: `pill ${kind === 'error' ? 'down' : kind === 'ok' ? 'up' : 'info'}`,
-    style: 'position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:200;'
-         + 'padding:10px 18px;font-size:13px;box-shadow:var(--shadow)',
-  }, message);
+    class: `pill toast ${kind === 'error' ? 'down' : kind === 'ok' ? 'up' : 'info'}`,
+  }, message,
+  action ? el('button', {
+    class: 'toast-act',
+    onclick: () => { node.remove(); action.onClick(); },
+  }, action.label) : null);
   document.body.append(node);
-  setTimeout(() => node.remove(), kind === 'error' ? 7000 : 3200);
+  setTimeout(() => node.remove(), action ? 12000 : kind === 'error' ? 7000 : 3200);
+}
+
+/** Side panel for reference content; closes on Escape or a click outside. */
+export function drawer(title, ...body) {
+  const root = $('#modalRoot');
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const close = () => { root.replaceChildren(); document.removeEventListener('keydown', onKey); };
+  const bg = el('div', {
+    class: 'drawer-bg',
+    onclick: (e) => { if (e.target === bg) close(); },
+  }, el('aside', { class: 'drawer', role: 'dialog', 'aria-label': title },
+    el('div', { class: 'drawer-head' },
+      el('h3', {}, title),
+      el('button', { class: 'icon-btn', onclick: close, 'aria-label': 'Close' }, '✕')),
+    el('div', { class: 'drawer-body' }, ...body)));
+  root.replaceChildren(bg);
+  document.addEventListener('keydown', onKey);
+  return close;
 }
 
 export function modal(title, ...body) {

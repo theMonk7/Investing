@@ -87,8 +87,10 @@ async function next() {
     emit();
     timer = setTimeout(poll, 2500);
   } catch (err) {
-    finish('failure', job.backend === 'github' && (err.status === 403 || err.status === 404)
-      ? 'Token cannot start workflows — give it Actions: read and write.'
+    const denied = job.backend === 'github' && [401, 403, 404].includes(err.status);
+    if (denied) job.authError = true;
+    finish('failure', denied
+      ? `GitHub refused to start the update (${err.status}): this token is not allowed to run workflows on the repo.`
       : err.message);
   }
 }

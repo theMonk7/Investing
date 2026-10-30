@@ -35,7 +35,8 @@ specifically.
 | Alert history and the rules in force | More → Alerts |
 | Sector board, sentiment history, per-sector story lists | More → Sector board |
 | SEC Form 4 / 8-K, India disclosures, catalysts, measured event reactions | More → Filings |
-| Contextual explanations of today's moves + a lesson library | More → Learn |
+| Concept of the day (25 concepts, beginner → advanced) with formula, worked example, your own data and a quiz; explanations of today's moves | Learn |
+| What the page is for, how to use it and what every metric means, with links to the matching concept | **ⓘ How to read this page** on every page |
 | Phone push via ntfy / Telegram / WhatsApp / Discord | scheduled workflows |
 
 Both markets have their own tab; switch with the toggle or press <kbd>m</kbd>.
@@ -65,12 +66,25 @@ fresh data always comes from a pipeline run. When GitHub sync is on:
 * **Add a ticker** → it's committed to `watchlist.json`, then a `quick` run
   fetches its quote, chart, news and events.
 * **Update now** (Watchlist) → `quick` run for every watched ticker.
-* **↻ Refresh** → reloads the committed files immediately, then starts a
-  `news` run for the current market.
+* **⟳ menu** (top right) →
+  * *Reload data*: re-reads the committed files. Instant, never needs a token.
+  * *Fetch latest news*: `news` run for the current market (also on the News
+    page as **↻ Fetch latest news**).
+  * *Update watchlist*: `quick` run for every watched ticker.
+  * *Refresh calendar*: `events` run.
 
 The chip at the top right shows progress; the page reloads itself when the
 run finishes (typically 1–2 minutes). Without a token the dashboard is
 read-only and refreshes on the schedule.
+
+**"Token cannot start workflows"** means the token can read the repo but
+GitHub refuses `workflow_dispatch`. Open ⚙ Settings → **Check access**: it
+tests the token without changing anything (identity, repo, Contents write,
+Actions write) and lists the exact fix. For a fine-grained token: edit it at
+<https://github.com/settings/personal-access-tokens>, set *Repository access*
+to this repo, and set **Contents** and **Actions** to *Read and write*. The
+token value does not change, so nothing needs re-pasting. A classic token
+needs the `repo` scope (plus `workflow`).
 
 **Local mode (no GitHub needed).** Run `./dev.sh` and open
 <http://127.0.0.1:8000/web/index.html>. The page detects the local server
@@ -294,7 +308,8 @@ Three ways, in order of convenience:
    localStorage and is sent only to `api.github.com`.
    If GitHub rejects a save (`404 Not Found` usually means the token can
    read the public repo but has no write access to it), the change is kept
-   in this browser and marked *not synced*; fix the token, then **retry**.
+   in this browser and marked *not synced*; ⚙ Settings → **Check access**
+   shows what is missing. Fix the token, then **retry**.
    With `./dev.sh` running, edits save straight to `watchlist.json` instead.
 2. **Edit `watchlist.json`** in GitHub directly. The next pipeline run picks
    it up.

@@ -55,9 +55,9 @@ export function saveLocalWatchlist(wl) {
   lsSet(LOCAL_WATCHLIST_KEY, wl);
 }
 
-async function ghFetch(path, options = {}) {
+function ghRaw(path, options = {}) {
   const s = settings();
-  const resp = await fetch(`${API}${path}`, {
+  return fetch(`${API}${path}`, {
     cache: 'no-store',
     ...options,
     headers: {
@@ -67,6 +67,10 @@ async function ghFetch(path, options = {}) {
       ...(options.headers || {}),
     },
   });
+}
+
+async function ghFetch(path, options = {}) {
+  const resp = await ghRaw(path, options);
   if (!resp.ok) {
     const detail = await resp.text().catch(() => '');
     let message = detail;
@@ -139,7 +143,63 @@ export async function getRun(id) {
   return ghFetch(`${repoPath()}/actions/runs/${encodeURIComponent(id)}`);
 }
 
-export async function testConnection() {
-  const repo = await ghFetch(repoPath());
-  return { full_name: repo.full_name, permissions: repo.permissions };
+// ------------------------------------------------------------ access check
+const ACCESS_KEY = 'mktdesk.ghAccess';
+const tokenTag = () => settings().token.slice(-6);
+
+export function tokenKind(token = settings().token) {
+  if (token.startsWith('github_pat_')) return 'fine-grained';
+  if (token.startsWith('ghp_')) return 'classic';
+  return 'other';
+}
+
+/** Last check for the token currently saved, or null. */
+export function lastAccess() {
+  const a = lsGet(ACCESS_KEY, null);
+  return a && a.tag === tokenTag() ? a : null;
+}
+
+/** True once a check has shown this token cannot start workflows. */
+export const dispatchBlocked = () => lastAccess()?.actions === false;
+
+export function forgetAccess() { lsSet(ACCESS_KEY, null); }
+
+/**
+ * Find out what the token may do without changing anything. The two write
+ * probes send requests that are invalid on purpose: GitHub checks permission
+ * first, so 422 ("invalid request") means allowed and 403/404 means refused.
+ */
+export async function checkAccess() {
+  const s = settings();
+  const out = {
+    tag: tokenTag(), at: new Date().toISOString(), kind: tokenKind(), repo: `${s.owner}/${s.repo}`,
+    valid: null, login: null, scopes: null, repoFound: null, push: null,
+    workflow: null, contents: null, actions: null,
+  };
+  const verdict = (status) => (status === 422 ? true : [401, 403, 404].includes(status) ? false : null);
+
+  const user = await ghRaw('/user');
+  out.valid = user.ok;
+  if (!user.ok) { lsSet(ACCESS_KEY, out); return out; }
+  out.login = (await user.json()).login;
+  out.scopes = user.headers.get('x-oauth-scopes');
+
+  const repo = await ghRaw(repoPath());
+  out.repoFound = repo.ok;
+  if (repo.ok) out.push = Boolean((await repo.json()).permissions?.push);
+
+  const wf = await ghRaw(`${repoPath()}/actions/workflows/${WORKFLOW}`);
+  out.workflow = wf.ok;
+
+  const put = await ghRaw(`${repoPath()}/contents/watchlist.json`, { method: 'PUT', body: '{}' });
+  out.contents = verdict(put.status);
+
+  if (out.workflow) {
+    const run = await ghRaw(`${repoPath()}/actions/workflows/${WORKFLOW}/dispatches`, {
+      method: 'POST', body: JSON.stringify({ ref: 'refs/heads/mktdesk-access-check-does-not-exist' }),
+    });
+    out.actions = verdict(run.status);
+  }
+  lsSet(ACCESS_KEY, out);
+  return out;
 }

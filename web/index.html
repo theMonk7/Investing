@@ -24,6 +24,7 @@
     <button data-view="news">News <span class="badge hidden" id="newsBadge">0</span></button>
     <button data-view="calendar">Calendar</button>
     <button data-view="market">Market</button>
+    <button data-view="learn">Learn</button>
     <div class="more">
       <button class="more-btn" id="moreBtn" aria-haspopup="true" aria-expanded="false">More ▾</button>
       <div class="more-list" id="moreList">
@@ -32,14 +33,16 @@
         <button data-view="alerts">Alerts <span class="badge hidden" id="alertBadge">0</span></button>
         <button data-view="sectornews">Sector board</button>
         <button data-view="filings">Filings</button>
-        <button data-view="learn">Learn</button>
         <button data-view="about">About</button>
       </div>
     </div>
   </nav>
   <div class="spacer"></div>
   <button class="sync-chip" id="syncChip" type="button"></button>
-  <button class="icon-btn" id="refreshBtn" title="Refresh data">⟳</button>
+  <div class="menu" id="refreshMenu">
+    <button class="icon-btn" id="refreshBtn" title="Refresh: reload or fetch news, prices, calendar" aria-haspopup="true" aria-expanded="false">⟳</button>
+    <div class="menu-list" id="refreshList" role="menu"></div>
+  </div>
   <button class="icon-btn" id="themeBtn" title="Toggle theme">◐</button>
   <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
 </header>

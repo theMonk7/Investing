@@ -312,7 +312,13 @@ export function newsFeed(ctx) {
           lsSet(`${SEEN_KEY}.${ctx.market}`, new Date().toISOString());
           ctx.rerender();
         },
-      }, 'Mark all read')),
+      }, 'Mark all read'),
+      el('button', {
+        class: 'btn sm primary', id: 'refreshNews',
+        title: ctx.connected ? 'Collect fresh headlines, filings and calendar for this market now'
+          : 'Connect GitHub (⚙) or run ./dev.sh to fetch news on demand',
+        onclick: () => ctx.fetchNews(),
+      }, ctx.syncBusy ? 'Updating…' : '↻ Fetch latest news')),
     sectorRow,
     note,
     list));
