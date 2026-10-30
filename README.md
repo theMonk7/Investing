@@ -72,6 +72,14 @@ The chip at the top right shows progress; the page reloads itself when the
 run finishes (typically 1–2 minutes). Without a token the dashboard is
 read-only and refreshes on the schedule.
 
+**Local mode (no GitHub needed).** Run `./dev.sh` and open
+<http://127.0.0.1:8000/web/index.html>. The page detects the local server
+and switches to local mode (chip shows `· local`): adding a ticker writes
+`watchlist.json` on disk and Update / ↻ Refresh run `pipeline/run_all.py` on
+your machine, so updates land in seconds. Fetching still needs internet
+(Yahoo, NSE, Nasdaq). Commit `watchlist.json` and `data/` to publish.
+The server listens on 127.0.0.1 only.
+
 ---
 
 ## Setup
@@ -112,7 +120,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r pipeline/requirements.txt
 cd pipeline && python run_all.py --mode full
 # other modes: quotes | news | events | quick --symbols "INFY.NS,AAPL"
-# then serve the repo root (the site finds ../data on its own)
+# then serve the repo root with the local API (the site finds ../data on its own)
 cd .. && ./dev.sh
 ```
 
@@ -284,6 +292,10 @@ Three ways, in order of convenience:
    PAT** scoped to this one repository with *Contents: read and write* and
    *Actions: read and write*. The token is stored only in your browser's
    localStorage and is sent only to `api.github.com`.
+   If GitHub rejects a save (`404 Not Found` usually means the token can
+   read the public repo but has no write access to it), the change is kept
+   in this browser and marked *not synced*; fix the token, then **retry**.
+   With `./dev.sh` running, edits save straight to `watchlist.json` instead.
 2. **Edit `watchlist.json`** in GitHub directly. The next pipeline run picks
    it up.
 3. **Locally**, then commit.
@@ -391,7 +403,7 @@ conditions and the charts are more informative than the single number.
 ```bash
 python tests/test_config_env.py           # blank/garbage Actions variables
 python tests/test_pipeline_offline.py     # synthetic data through every module
-npm install && ./dev.sh &                 # then, in another shell:
+npm install && python3 -m http.server 8000 &   # then, in another shell:
 PORT=8000 node tests/render-test.mjs      # every view in jsdom, real data
 PORT=8000 node tests/sector-test.mjs      # sector board, tooltips, feed filters
 ```

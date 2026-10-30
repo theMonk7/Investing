@@ -117,7 +117,7 @@ if (after !== before + 1) errors.push(`add symbol did not add a table row (${bef
 const added = [...doc.querySelectorAll('#main tbody tr')].find((tr) => tr.textContent.includes('ZZWIPRO'));
 if (!added) errors.push('added ticker not shown in the table');
 else {
-  if (!/No data yet/.test(added.textContent)) errors.push(`new ticker placeholder missing: ${added.textContent}`);
+  if (!/No data yet|Fetching…/.test(added.textContent)) errors.push(`new ticker placeholder missing: ${added.textContent}`);
   click(added);
   await sleep(200);
   if (!doc.querySelector('.modal')) errors.push('modal for a ticker without data did not open');

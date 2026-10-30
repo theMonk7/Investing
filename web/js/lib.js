@@ -187,7 +187,7 @@ export function toast(message, kind = 'info') {
          + 'padding:10px 18px;font-size:13px;box-shadow:var(--shadow)',
   }, message);
   document.body.append(node);
-  setTimeout(() => node.remove(), 3200);
+  setTimeout(() => node.remove(), kind === 'error' ? 7000 : 3200);
 }
 
 export function modal(title, ...body) {

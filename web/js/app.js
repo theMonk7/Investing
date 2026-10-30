@@ -3,6 +3,7 @@
 import * as calendar from './calendar.js';
 import * as gh from './gh.js';
 import { $, $$, ago, card, display, el, lsGet, lsSet, modal, pill, toast } from './lib.js';
+import * as local from './local.js';
 import * as newsViews from './news-views.js';
 import * as sync from './sync.js';
 import * as views from './views.js';
@@ -37,6 +38,13 @@ const routeOf = (hash) => {
   return VIEWS[view] ? view : 'watchlist';
 };
 const marketOf = (sym) => (/\.(NS|BO)$/.test(sym) ? 'IN' : 'US');
+// Local server first (this machine runs the pipeline), else GitHub Actions.
+const canUpdate = () => local.available() || gh.configured();
+const syncMode = () => {
+  if (local.available()) return 'local';
+  return gh.configured() ? 'github' : 'readonly';
+};
+const UNSYNCED_KEY = 'mktdesk.watchlist.unsynced';
 
 const state = {
   market: lsGet('mktdesk.market', 'IN'),
@@ -50,6 +58,7 @@ const state = {
   watchlist: null,
   source: 'pages',
   saving: new Set(),       // tickers whose watchlist commit is in flight
+  unsynced: lsGet(UNSYNCED_KEY, false),   // local edits GitHub has not accepted yet
 };
 
 // --------------------------------------------------------------- data load
@@ -65,7 +74,7 @@ async function pagesJSON(path) {
  * Otherwise, or if the API fails, read the published copy.
  */
 async function loadAll() {
-  let repo = gh.configured();
+  let repo = gh.configured() && !local.available();
   let repoError = null;
   const get = async (path) => {
     if (repo) {
@@ -98,12 +107,15 @@ async function loadAll() {
   if (repoError) toast(`GitHub read failed, showing published data. ${repoError}`, 'error');
 }
 
-/** Connected: watchlist.json in the repo is the truth, since every edit is
- *  committed. Disconnected: this browser's copy, seeded from the pipeline's. */
+/** Local mode: watchlist.json on disk. Connected: watchlist.json in the repo,
+ *  unless this browser holds edits GitHub refused. Otherwise this browser's
+ *  copy, seeded from the pipeline's. */
 async function loadWatchlist(repo) {
-  if (repo && !state.saving.size) {
+  const source = local.available() || (repo && !state.unsynced);
+  if (source && !state.saving.size) {
     try {
-      const wl = await gh.readJSON('watchlist.json');
+      const wl = local.available()
+        ? await local.readWatchlist() : await gh.readJSON('watchlist.json');
       state.watchlist = { IN: wl.IN ?? [], US: wl.US ?? [] };
       gh.saveLocalWatchlist(state.watchlist);
       return;
@@ -151,6 +163,7 @@ let writeChain = Promise.resolve();
 function commitWatchlist(message) {
   const snapshot = structuredClone(state.watchlist);
   const run = writeChain.then(async () => {
+    if (local.available()) return local.saveWatchlist(snapshot);
     const remote = await gh.fetchRemoteWatchlist().catch(() => ({ watchlist: {} }));
     await gh.pushWatchlist({ ...remote.watchlist, IN: snapshot.IN, US: snapshot.US, version: 1 },
       message);
@@ -162,6 +175,49 @@ function commitWatchlist(message) {
 function saveLocally() {
   gh.saveLocalWatchlist(state.watchlist);
   decorate();
+}
+
+function setUnsynced(value) {
+  state.unsynced = value;
+  lsSet(UNSYNCED_KEY, value);
+}
+
+/** The edit is already saved in this browser; say why GitHub did not take it. */
+function reportWriteFailure(err) {
+  if (local.available()) {
+    toast(`Could not save watchlist.json: ${err.message}`, 'error');
+    return;
+  }
+  setUnsynced(true);
+  const s = gh.settings();
+  const why = {
+    401: 'the token is invalid or expired',
+    403: `the token cannot write to ${s.owner}/${s.repo}`,
+    404: `the token cannot write to ${s.owner}/${s.repo} (GitHub answers 404 when a token lacks access)`,
+  }[err.status] ?? err.message;
+  toast(`Saved in this browser only: ${why}. Fix the token in ⚙ Settings, then Retry.`, 'error');
+}
+
+const missingQuote = (sym) =>
+  !(state.bundles[marketOf(sym)]?.quotes ?? []).some((q) => q.symbol === sym);
+
+/** Push edits GitHub refused earlier, then fetch any ticker still without data. */
+async function retrySync({ quiet = false } = {}) {
+  if (!state.unsynced || local.available() || !gh.configured()) return;
+  try {
+    await commitWatchlist('chore: sync watchlist from dashboard');
+  } catch (err) {
+    if (!quiet) reportWriteFailure(err);
+    return;
+  }
+  setUnsynced(false);
+  const todo = [...state.watchlist.IN, ...state.watchlist.US].filter(missingQuote);
+  if (todo.length) {
+    sync.request({ mode: 'quick', markets: [...new Set(todo.map(marketOf))], symbols: todo,
+      label: todo.map(display).join(', ') });
+  }
+  if (!quiet) toast('Watchlist synced to GitHub', 'ok');
+  render();
 }
 
 async function addSymbols(raws) {
@@ -178,9 +234,9 @@ async function addSymbols(raws) {
   saveLocally();
   const syms = added.map((a) => a.sym);
 
-  if (!gh.configured()) {
+  if (!canUpdate()) {
     render();
-    toast('Saved in this browser. Connect GitHub (⚙) to fetch its data right away.');
+    toast('Saved in this browser. Connect GitHub (⚙) or run ./dev.sh to fetch its data now.');
     return;
   }
   syms.forEach((s) => state.saving.add(s));
@@ -193,7 +249,7 @@ async function addSymbols(raws) {
       label: syms.map(display).join(', '),
     });
   } catch (err) {
-    toast(`Could not save to GitHub: ${err.message}`, 'error');
+    reportWriteFailure(err);
   } finally {
     syms.forEach((s) => state.saving.delete(s));
     render();
@@ -205,14 +261,14 @@ async function removeSymbol(sym) {
   state.watchlist[market] = state.watchlist[market].filter((s) => s !== sym);
   saveLocally();
   render();
-  if (!gh.configured()) return;
+  if (!canUpdate()) return;
   try { await commitWatchlist(`chore: unwatch ${sym}`); }
-  catch (err) { toast(`Could not save to GitHub: ${err.message}`, 'error'); }
+  catch (err) { reportWriteFailure(err); render(); }
 }
 
 /** Fetch prices, news and events for tickers without watching them. */
 function fetchSymbols(raws, what = 'data') {
-  if (!gh.configured()) { openSettings(); return; }
+  if (!canUpdate()) { openSettings(); return; }
   const list = raws.map(normalise).filter(Boolean);
   if (!list.length) return;
   sync.request({
@@ -224,7 +280,7 @@ function fetchSymbols(raws, what = 'data') {
 }
 
 function updateWatchlist() {
-  if (!gh.configured()) { openSettings(); return; }
+  if (!canUpdate()) { openSettings(); return; }
   const syms = state.watchlist[state.market];
   if (!syms.length) return;
   sync.request({ mode: 'quick', markets: [state.market], symbols: syms,
@@ -233,7 +289,7 @@ function updateWatchlist() {
 }
 
 function fetchEvents() {
-  if (!gh.configured()) { openSettings(); return; }
+  if (!canUpdate()) { openSettings(); return; }
   sync.request({ mode: 'events', markets: [state.market],
     label: `${MARKET_NAME[state.market]} calendar` });
   render();
@@ -245,10 +301,11 @@ async function refresh() {
   btn.classList.add('spinning');
   try { await loadAll(); render(); }
   finally { btn.classList.remove('spinning'); }
-  if (!gh.configured()) {
-    toast('Reloaded the published data. Connect GitHub (⚙) to fetch fresh data on demand.');
+  if (!canUpdate()) {
+    toast('Reloaded the published data. Connect GitHub (⚙) or run ./dev.sh to fetch fresh data.');
     return;
   }
+  await retrySync({ quiet: true });
   sync.request({ mode: 'news', markets: [state.market],
     label: `${MARKET_NAME[state.market]} refresh` });
 }
@@ -265,7 +322,10 @@ function context() {
     curriculum: state.curriculum,
     scorecard: state.scorecard,
     watchSymbols: state.watchlist?.[m] ?? [],
-    connected: gh.configured(),
+    connected: canUpdate(),
+    mode: syncMode(),
+    unsynced: state.unsynced && syncMode() === 'github',
+    retrySync: () => retrySync(),
     pending: new Set([...sync.pendingSymbols(), ...state.saving]),
     syncBusy: sync.busy(),
     addSymbol: (sym) => addSymbols([sym]),
@@ -330,30 +390,35 @@ function updateChip() {
     const phase = job.status === 'in_progress' ? 'Updating' : 'Starting';
     chip.className = 'sync-chip running';
     chip.textContent = `${phase} ${job.label || 'data'}… ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-    chip.title = 'A pipeline run is fetching fresh data. Click to open it on GitHub.';
+    chip.title = job.backend === 'local'
+      ? 'The pipeline is running on this machine (see the dev.sh terminal).'
+      : 'A pipeline run is fetching fresh data. Click to open it on GitHub.';
     chipTimer = setTimeout(updateChip, 1000);
     return;
   }
-  const failed = job && job.conclusion && job.conclusion !== 'success'
+  const failed = job?.conclusion && job.conclusion !== 'success'
     && Date.now() - Date.parse(job.startedAt) < 3600e3;
-  if (failed && gh.configured()) {
+  if (failed && canUpdate()) {
     chip.className = 'sync-chip failed';
     chip.textContent = 'Update failed · retry';
     chip.title = job.error || `Run ended: ${job.conclusion}`;
     return;
   }
-  chip.className = `sync-chip${gh.configured() ? '' : ' readonly'}`;
-  chip.textContent = `Updated ${ago(stamp)}${gh.configured() ? '' : ' · read-only'}`;
-  chip.title = gh.configured()
-    ? `Reading live from GitHub (${state.source}). Click to fetch fresh data.`
-    : 'Showing the published data. Click to connect GitHub and update on demand.';
+  const mode = syncMode();
+  chip.className = `sync-chip${mode === 'readonly' ? ' readonly' : ''}`;
+  chip.textContent = `Updated ${ago(stamp)}${{ local: ' · local', readonly: ' · read-only', github: '' }[mode]}`;
+  chip.title = {
+    local: 'Running locally: updates run the pipeline on this machine. Click to fetch fresh data.',
+    github: `Reading live from GitHub (${state.source}). Click to fetch fresh data.`,
+    readonly: 'Showing the published data. Click to connect GitHub and update on demand.',
+  }[mode];
 }
 
 function onChipClick() {
   const job = sync.current();
   if (sync.busy()) {
     if (job.url) window.open(job.url, '_blank', 'noopener');
-  } else if (!gh.configured()) {
+  } else if (!canUpdate()) {
     openSettings();
   } else if ($('#syncChip').classList.contains('failed')) {
     sync.retry();
@@ -379,8 +444,7 @@ async function onSyncSuccess(job) {
   await loadAll();
   render();
   const missing = job.symbols.filter((s) =>
-    (state.watchlist[marketOf(s)] ?? []).includes(s)
-    && !(state.bundles[marketOf(s)]?.quotes ?? []).some((q) => q.symbol === s));
+    (state.watchlist[marketOf(s)] ?? []).includes(s) && missingQuote(s));
   if (missing.length) {
     toast(`No price data for ${missing.map(display).join(', ')}. Check the ticker on Yahoo Finance.`, 'error');
   } else {
@@ -421,6 +485,7 @@ function openSettings() {
       }
       status.textContent = `Connected to ${info.full_name}. Syncing watchlist…`;
       const extras = await adoptRemoteWatchlist();
+      setUnsynced(false);
       await loadAll();
       render();
       status.textContent = `Connected to ${info.full_name}.`
@@ -431,6 +496,15 @@ function openSettings() {
   };
 
   modal('Settings',
+    local.available()
+      ? card('Running locally', 'no GitHub needed',
+          el('p', { class: 'dim', style: 'font-size:12.5px;line-height:1.7;margin:0' },
+            'This page is served by ', el('code', {}, 'pipeline/local_server.py'), '. Adding a '
+            + 'ticker saves it to ', el('code', {}, 'watchlist.json'), ' and Refresh / Update run '
+            + 'the pipeline on this machine. Commit and push ', el('code', {}, 'watchlist.json'),
+            ' and ', el('code', {}, 'data/'), ' yourself to publish. The GitHub connection below '
+            + 'is used only by the published site.'))
+      : null,
     card('GitHub connection', gh.configured() ? 'connected' : 'optional',
       el('p', { class: 'dim', style: 'font-size:12.5px;line-height:1.7;margin:0 0 16px' },
         'Connect to update on demand. Refresh, Update and adding a ticker start a short '
@@ -590,7 +664,7 @@ function wire() {
   document.documentElement.dataset.theme = lsGet('mktdesk.theme', 'dark');
   wire();
   try {
-    await resolveDataBase();
+    await Promise.all([resolveDataBase(), local.detect()]);
     await loadAll();
   } catch (err) {
     $('#main').replaceChildren(el('div', { class: 'banner err' },

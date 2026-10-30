@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Local development helper. Serves the repo root so web/ can reach ../data.
+# Local development: serves the repo root (web/ reaches ../data) plus the
+# local API, so adding a ticker or "Update now" runs the pipeline here.
 set -euo pipefail
-PORT="${PORT:-8000}"
 cd "$(dirname "$0")"
-echo "Dashboard: http://127.0.0.1:${PORT}/web/index.html"
-exec python3 -m http.server "$PORT"
+PY=python3
+[[ -x .venv/bin/python ]] && PY=.venv/bin/python
+exec "$PY" pipeline/local_server.py

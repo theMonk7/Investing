@@ -46,9 +46,12 @@ HTTP.
 
 ```bash
 npm install                # once
-./dev.sh &                 # serves the repo root on :8000
+python3 -m http.server 8000 &   # read-only mode (no side effects)
 PORT=8000 node tests/render-test.mjs
 ```
+
+Against `./dev.sh` instead, the page runs in local mode: the add/remove
+ticker step writes `watchlist.json` and starts a real local `quick` run.
 
 ## `sector-test.mjs`
 

@@ -8,6 +8,7 @@
 
 import * as gh from './gh.js';
 import { lsGet, lsSet } from './lib.js';
+import * as local from './local.js';
 
 const KEY = 'mktdesk.sync';
 const POLL_MS = 5000;
@@ -22,6 +23,7 @@ let onDone = async () => {};
 const listeners = new Set();
 
 const emit = () => { lsSet(KEY, job); listeners.forEach((fn) => fn(job, queue)); };
+const backend = () => (job?.backend === 'local' ? local : gh);
 
 export const current = () => job;
 export const busy = () => Boolean(job && ACTIVE.has(job.status));
@@ -73,11 +75,11 @@ async function next() {
     requestId, mode: q.mode, markets: [...q.markets], symbols: [...q.symbols],
     label: q.labels.join(', '), status: 'dispatching', conclusion: null,
     startedAt: new Date().toISOString(), runId: null, url: null, errors: 0,
-    retried: Boolean(q.retried),
+    retried: Boolean(q.retried), backend: local.available() ? 'local' : 'github',
   };
   emit();
   try {
-    const run = await gh.dispatch(job.mode, {
+    const run = await backend().dispatch(job.mode, {
       markets: job.markets.join(','), symbols: job.symbols.join(','), request_id: requestId,
     });
     if (run) Object.assign(job, { runId: run.id, url: run.html_url });
@@ -85,7 +87,7 @@ async function next() {
     emit();
     timer = setTimeout(poll, 2500);
   } catch (err) {
-    finish('failure', err.status === 403 || err.status === 404
+    finish('failure', job.backend === 'github' && (err.status === 403 || err.status === 404)
       ? 'Token cannot start workflows — give it Actions: read and write.'
       : err.message);
   }
@@ -95,10 +97,10 @@ async function poll() {
   clearTimeout(timer);
   if (!busy()) return;
   try {
-    const run = job.runId ? await gh.getRun(job.runId) : await gh.findRun(job.requestId);
+    const run = job.runId ? await backend().getRun(job.runId) : await backend().findRun(job.requestId);
     if (run) {
-      Object.assign(job, { runId: run.id, url: run.html_url, status: run.status,
-        conclusion: run.conclusion, errors: 0 });
+      Object.assign(job, { runId: run.id, url: run.html_url ?? null, status: run.status,
+        conclusion: run.conclusion, error: run.error ?? job.error, errors: 0 });
     } else if (Date.now() - Date.parse(job.startedAt) > FIND_TIMEOUT_MS) {
       return finish('failure', 'The run never appeared. Check the Actions tab.');
     }

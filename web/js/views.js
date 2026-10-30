@@ -158,17 +158,36 @@ export function watchlist(ctx) {
   };
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
 
+  const savedTo = {
+    local: 'saved to watchlist.json',
+    github: ctx.unsynced ? 'not synced to GitHub' : 'synced to GitHub',
+    readonly: 'saved in this browser',
+  }[ctx.mode];
+  const settingsLink = (text) => el('a', { href: '#', onclick: (e) => { e.preventDefault(); ctx.openSettings(); } }, text);
+  let hint = null;
+  if (ctx.unsynced) {
+    hint = el('p', { class: 'faint hint' },
+      'GitHub did not accept your latest changes, so they are kept in this browser. ',
+      settingsLink('Check the token'), ' (Contents: read and write for this repo), then ',
+      el('a', { href: '#', onclick: (e) => { e.preventDefault(); ctx.retrySync(); } }, 'retry'), '.');
+  } else if (!ctx.connected) {
+    hint = el('p', { class: 'faint hint' },
+      'Read-only: new tickers get data on the next scheduled run. ',
+      settingsLink('Connect GitHub'), ' or run ', el('code', {}, './dev.sh'),
+      ' locally to fetch them immediately.');
+  }
+
   frag.append(el('div', { class: 'card' },
     el('div', { class: 'row', style: 'margin-bottom:14px' },
       el('h3', { class: 'card-head', style: 'margin:0' }, `Watchlist`,
-        el('span', { class: 'sub' }, `${rows.length} · ${ctx.connected ? 'synced to GitHub' : 'saved in this browser'}`)),
+        el('span', { class: 'sub' }, `${rows.length} · ${savedTo}`)),
       el('div', { class: 'spacer' }),
       input,
       el('button', { class: 'btn primary', onclick: add }, 'Add'),
       el('button', {
         class: 'btn', id: 'updateWatchlist',
         title: ctx.connected ? 'Fetch fresh prices, news and events for these tickers now'
-          : 'Connect GitHub to update on demand',
+          : 'Connect GitHub or run ./dev.sh to update on demand',
         disabled: !rows.length,
         onclick: () => ctx.updateWatchlist(),
       }, ctx.syncBusy ? 'Updating…' : 'Update now')),
@@ -176,10 +195,7 @@ export function watchlist(ctx) {
       ? table(cols, rows, { onRow: (r) => stockDetail(ctx, r.symbol),
           initialSort: { key: 'change_pct', dir: -1 } })
       : el('div', { class: 'empty' }, 'Your watchlist is empty. Add a ticker above.'),
-    ctx.connected ? null : el('p', { class: 'faint hint' },
-      'Read-only: new tickers get data on the next scheduled run. ',
-      el('a', { href: '#', onclick: (e) => { e.preventDefault(); ctx.openSettings(); } }, 'Connect GitHub'),
-      ' to fetch them immediately.')));
+    hint));
   return frag;
 }
 
