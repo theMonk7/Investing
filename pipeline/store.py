@@ -96,6 +96,19 @@ CREATE TABLE IF NOT EXISTS lessons_seen (
     ts TEXT
 );
 
+-- Results dates, board meetings, ex-dates. Kept across runs so a source that
+-- is unreachable on one run does not empty the calendar.
+CREATE TABLE IF NOT EXISTS corp_events (
+    id TEXT PRIMARY KEY,
+    market TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    date TEXT NOT NULL,
+    official INTEGER DEFAULT 0,
+    first_seen TEXT,
+    payload TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_corp_events_date ON corp_events(market, date);
+
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
 
@@ -292,6 +305,30 @@ def last_alert_ts(cx, symbol: str, kind: str) -> str | None:
     return row["ts"] if row else None
 
 
+def save_corp_events(cx, items: list[dict]) -> None:
+    """Upsert, but never let an estimate overwrite an exchange-sourced row."""
+    now = utcnow()
+    cx.executemany(
+        "INSERT INTO corp_events(id,market,symbol,date,official,first_seen,payload)"
+        " VALUES (:id,:market,:symbol,:date,:official,:now,:payload)"
+        " ON CONFLICT(id) DO UPDATE SET date=excluded.date, official=excluded.official,"
+        " payload=excluded.payload"
+        " WHERE corp_events.official=0 OR excluded.official=1",
+        [{"id": e["id"], "market": e["market"], "symbol": e["symbol"],
+          "date": e["date"], "official": int(bool(e.get("official"))),
+          "now": now, "payload": json.dumps(e)} for e in items],
+    )
+
+
+def corp_events_between(cx, market: str, start: str, end: str) -> list[dict]:
+    rows = cx.execute(
+        "SELECT payload, first_seen FROM corp_events"
+        " WHERE market=? AND date BETWEEN ? AND ? ORDER BY date, symbol",
+        (market, start, end),
+    ).fetchall()
+    return [{**json.loads(r["payload"]), "first_seen": r["first_seen"]} for r in rows]
+
+
 def set_meta(cx, key: str, value) -> None:
     cx.execute("INSERT OR REPLACE INTO meta(k,v) VALUES (?,?)",
                (key, json.dumps(value)))
@@ -310,6 +347,7 @@ def prune(cx, keep_news_days: int = 180, keep_alerts: int = 2000) -> None:
     )
     cx.execute("DELETE FROM sector_daily WHERE date < date('now', '-365 days')")
     cx.execute("DELETE FROM event_log WHERE date < date('now', '-365 days')")
+    cx.execute("DELETE FROM corp_events WHERE date < date('now', '-120 days')")
     cx.execute(
         "DELETE FROM alerts WHERE id NOT IN "
         "(SELECT id FROM alerts ORDER BY id DESC LIMIT ?)",

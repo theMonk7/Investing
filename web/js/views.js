@@ -1,9 +1,10 @@
 // View renderers. Each export returns a DocumentFragment-ish element tree for
 // the main pane. State comes in as `ctx` so views stay pure and testable.
 
+import { eventLabel, eventRow, eventsFor, nextEvent, relDay, todayISO } from './calendar.js';
 import {
   ago, card, changePill, compact, display, el, fmt, meter, modal, pct, pill,
-  sign, sparkline, stat, table, toast,
+  sign, stat, table,
 } from './lib.js';
 
 const RSI_COLOUR = (v) => (v >= 70 ? 'var(--down)' : v <= 30 ? 'var(--up)' : 'var(--accent)');
@@ -14,8 +15,16 @@ function quoteMap(bundle) {
   return Object.fromEntries(bundle.quotes.map((q) => [q.symbol, q]));
 }
 
-// ---------------------------------------------------------------- overview
-export function overview(ctx) {
+/** Stories about one ticker: its own news bucket, else matches in the feed. */
+function storiesFor(ctx, sym) {
+  const own = ctx.bundle.news_by_symbol?.[sym];
+  if (own?.length) return own;
+  return (ctx.feed?.items ?? []).filter((i) =>
+    (i.kind ?? 'news') === 'news' && (i.symbol === sym || (i.tickers ?? []).includes(sym)));
+}
+
+// ------------------------------------------------------------------ market
+export function market(ctx) {
   const { bundle, meta } = ctx;
   const r = bundle.regime || {};
   const s = bundle.market_sentiment || {};
@@ -73,21 +82,8 @@ export function overview(ctx) {
           pct(sec.ret_5d))))));
 
   frag.append(el('div', { class: 'grid g2' }, sentCard, sectorCard));
-
-  // watchlist snapshot
-  const watched = bundle.quotes.filter((q) => q.watched);
-  frag.append(card(`Your watchlist (${watched.length})`, 'click a row for detail',
-    table(watchCols(ctx), watched, {
-      onRow: (row) => stockDetail(ctx, row.symbol),
-      initialSort: { key: 'change_pct', dir: -1 },
-    })));
-
-  // teaching teaser
-  const lessons = (bundle.lessons ?? []).slice(0, 3);
-  if (lessons.length) {
-    frag.append(card('Why things moved today', 'full explanations in Learn',
-      ...lessons.map((l) => lessonBlock(l, ctx))));
-  }
+  frag.append(movers(ctx));
+  frag.append(sectors(ctx));
   return frag;
 }
 
@@ -97,87 +93,99 @@ const bar = (n, s) => {
 };
 
 // --------------------------------------------------------------- watchlist
-function watchCols(ctx) {
-  return [
-    { key: 'symbol', label: 'Symbol', render: (r) =>
-        el('div', { class: 'sym' }, display(r.symbol), el('small', {}, r.name || r.sector)) },
-    { key: 'close', label: 'Price', render: (r) =>
-        el('span', { class: 'num' }, ctx.bundle.currency + fmt(r.close)) },
-    { key: 'change_pct', label: 'Chg %', render: (r) => changePill(r.change_pct) },
-    { key: 'ret_5d', label: '5D', render: (r) =>
-        el('span', { class: `num ${sign(r.ret_5d)}` }, pct(r.ret_5d)) },
-    { key: 'ret_20d', label: '20D', render: (r) =>
-        el('span', { class: `num ${sign(r.ret_20d)}` }, pct(r.ret_20d)) },
-    { key: 'rsi14', label: 'RSI', title: 'Relative Strength Index (14)',
-      render: (r) => meter(r.rsi14, 0, 100, RSI_COLOUR(r.rsi14)) },
-    { key: 'vol_z', label: 'Vol σ', title: 'Volume vs 20-day average, in standard deviations',
-      render: (r) => el('span', { class: `num ${r.vol_z > 2 ? 'up' : ''}` }, fmt(r.vol_z, 1)) },
-    { key: 'atr_pct', label: 'ATR%', title: 'Average True Range as % of price — daily travel',
-      render: (r) => el('span', { class: 'num faint' }, fmt(r.atr_pct, 1)) },
-    // `prob` is flattened onto each quote in app.js so the column can sort.
-    { key: 'prob', label: `${ctx.meta?.predict_horizon_days ?? 5}D RS`,
-      title: 'Model probability this stock beats the median stock over the horizon '
-           + '(relative strength, not direction)',
-      render: (r) => (r.prob == null
-        ? el('span', { class: 'faint' }, '\u2014')
-        : el('span', { class: `num ${r.prob > 0.55 ? 'up' : r.prob < 0.45 ? 'down' : ''}` },
-            `${(r.prob * 100).toFixed(0)}%`)) },
-  ];
-}
-
 export function watchlist(ctx) {
   const { bundle } = ctx;
+  const quotes = quoteMap(bundle);
+  const cur = bundle.currency ?? '';
   const frag = el('div');
-  const watched = bundle.quotes.filter((q) => q.watched);
+
+  const rows = ctx.watchSymbols.map((sym) => {
+    const q = quotes[sym];
+    const stories = storiesFor(ctx, sym);
+    const ev = nextEvent(ctx, sym);
+    return {
+      ...(q ?? {}), symbol: sym, q,
+      state: q ? 'ok' : ctx.pending.has(sym) ? 'pending' : 'missing',
+      news: stories.length,
+      tone: stories.length ? stories.reduce((a, s) => a + Number(s.sentiment ?? 0), 0) / stories.length : null,
+      ev, next: ev?.date ?? '~',
+    };
+  });
+
+  const blank = (r) => el('span', { class: 'faint' }, r.state === 'ok' ? '—' : '');
+  const cols = [
+    { key: 'symbol', label: 'Symbol', render: (r) => el('div', { class: 'sym' }, display(r.symbol),
+        el('small', {}, r.state === 'pending' ? 'Fetching…'
+          : r.state === 'missing' ? 'No data yet'
+          : r.name || r.sector)) },
+    { key: 'close', label: 'Price', render: (r) => (r.q
+        ? el('span', { class: 'num' }, cur + fmt(r.close))
+        : r.state === 'pending' ? el('span', { class: 'spin sm', title: 'Fetching' }) : blank(r)) },
+    { key: 'change_pct', label: 'Day', render: (r) => (r.q ? changePill(r.change_pct) : blank(r)) },
+    { key: 'ret_5d', label: '5D', render: (r) => (r.q
+        ? el('span', { class: `num ${sign(r.ret_5d)}` }, pct(r.ret_5d)) : blank(r)) },
+    { key: 'ret_20d', label: '1M', title: '20 trading days', render: (r) => (r.q
+        ? el('span', { class: `num ${sign(r.ret_20d)}` }, pct(r.ret_20d)) : blank(r)) },
+    { key: 'rsi14', label: 'RSI', title: 'Relative Strength Index (14)', render: (r) =>
+        (r.q ? meter(r.rsi14, 0, 100, RSI_COLOUR(r.rsi14)) : blank(r)) },
+    { key: 'news', label: 'News', title: 'Stories in the news window and their average tone',
+      render: (r) => (r.news
+        ? el('span', { class: 'row', style: 'gap:6px;justify-content:flex-end' },
+            el('span', { class: 'num' }, r.news),
+            el('span', { class: `tag ${r.tone > 0.1 ? 'bull' : r.tone < -0.1 ? 'bear' : ''}` },
+              `${r.tone >= 0 ? '+' : ''}${fmt(r.tone, 2)}`))
+        : el('span', { class: 'faint' }, '0')) },
+    { key: 'next', label: 'Next event', title: 'From exchange filings (estimates marked)',
+      render: (r) => (r.ev
+        ? el('span', { class: 'next-ev', title: `${r.ev.title} · ${r.ev.date}` },
+            eventLabel(r.ev), el('small', {}, relDay(r.ev.date)))
+        : el('span', { class: 'faint' }, '—')) },
+    { key: 'remove', label: '', sort: false, render: (r) => el('button', {
+        class: 'icon-x', title: `Remove ${display(r.symbol)}`, 'aria-label': `Remove ${display(r.symbol)}`,
+        onclick: (e) => { e.stopPropagation(); ctx.removeSymbol(r.symbol); },
+      }, '×') },
+  ];
 
   const input = el('input', {
-    type: 'text', placeholder: bundle.market === 'IN' ? 'e.g. WIPRO.NS' : 'e.g. NFLX',
-    style: 'flex:1;min-width:180px', id: 'addSym',
+    type: 'text', id: 'addSym', autocomplete: 'off',
+    placeholder: ctx.market === 'IN' ? 'Add tickers, e.g. WIPRO, TATAPOWER' : 'Add tickers, e.g. NFLX, COST',
   });
   const add = () => {
-    let sym = input.value.trim().toUpperCase();
-    if (!sym) return;
-    if (bundle.market === 'IN' && !sym.includes('.')) sym += '.NS';
-    ctx.addSymbol(sym);
+    const raw = input.value.split(/[,\s]+/).filter(Boolean);
+    if (!raw.length) return;
     input.value = '';
+    ctx.addSymbols(raw);
   };
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
 
-  frag.append(card('Manage watchlist',
-    ctx.syncLabel,
+  frag.append(el('div', { class: 'card' },
     el('div', { class: 'row', style: 'margin-bottom:14px' },
+      el('h3', { class: 'card-head', style: 'margin:0' }, `Watchlist`,
+        el('span', { class: 'sub' }, `${rows.length} · ${ctx.connected ? 'synced to GitHub' : 'saved in this browser'}`)),
+      el('div', { class: 'spacer' }),
       input,
-      el('button', { class: 'btn primary', onclick: add }, '+ Add'),
-      el('button', { class: 'btn', onclick: () => ctx.openSettings() }, '⚙ Sync settings')),
-    el('div', { class: 'chips' }, ...ctx.watchSymbols.map((sym) =>
-      el('span', { class: 'chip' }, display(sym),
-        el('button', { title: 'Remove', onclick: () => ctx.removeSymbol(sym) }, '×')))),
-    el('p', { class: 'faint', style: 'font-size:11.5px;margin:14px 0 0;line-height:1.6' },
-      'Symbols use Yahoo Finance format: NSE tickers end in .NS (RELIANCE.NS), '
-      + 'BSE in .BO, US tickers are plain (AAPL). Changes save to this browser '
-      + 'immediately; with GitHub sync on they also commit to watchlist.json, '
-      + 'so the scheduled pipeline fetches news and sends alerts for them.')));
-
-  frag.append(card(`Watchlist detail (${watched.length})`, null,
-    table([...watchCols(ctx),
-      { key: 'pct_from_52w_hi', label: 'vs 52w hi',
-        render: (r) => el('span', { class: 'num faint' }, pct(r.pct_from_52w_hi, 1)) },
-      { key: 'sector', label: 'Sector', render: (r) => el('span', { class: 'faint' }, r.sector) },
-    ], watched, { onRow: (r) => stockDetail(ctx, r.symbol), initialSort: { key: 'change_pct', dir: -1 } })));
-
-  const missing = ctx.watchSymbols.filter((s) => !bundle.quotes.some((q) => q.symbol === s));
-  if (missing.length) {
-    frag.append(el('div', { class: 'banner' },
-      `No data yet for ${missing.map(display).join(', ')}. `
-      + 'These appear after the next pipeline run (or check the symbol is valid on Yahoo Finance).'));
-  }
+      el('button', { class: 'btn primary', onclick: add }, 'Add'),
+      el('button', {
+        class: 'btn', id: 'updateWatchlist',
+        title: ctx.connected ? 'Fetch fresh prices, news and events for these tickers now'
+          : 'Connect GitHub to update on demand',
+        disabled: !rows.length,
+        onclick: () => ctx.updateWatchlist(),
+      }, ctx.syncBusy ? 'Updating…' : 'Update now')),
+    rows.length
+      ? table(cols, rows, { onRow: (r) => stockDetail(ctx, r.symbol),
+          initialSort: { key: 'change_pct', dir: -1 } })
+      : el('div', { class: 'empty' }, 'Your watchlist is empty. Add a ticker above.'),
+    ctx.connected ? null : el('p', { class: 'faint hint' },
+      'Read-only: new tickers get data on the next scheduled run. ',
+      el('a', { href: '#', onclick: (e) => { e.preventDefault(); ctx.openSettings(); } }, 'Connect GitHub'),
+      ' to fetch them immediately.')));
   return frag;
 }
 
 // ------------------------------------------------------------------ movers
-export function movers(ctx) {
+function movers(ctx) {
   const m = ctx.bundle.movers || {};
-  const frag = el('div');
   const cols = [
     { key: 'symbol', label: 'Symbol', render: (r) =>
         el('div', { class: 'sym' }, display(r.symbol), el('small', {}, r.name)) },
@@ -189,22 +197,23 @@ export function movers(ctx) {
   ];
   const onRow = (r) => stockDetail(ctx, r.symbol);
 
-  frag.append(el('div', { class: 'grid g2' },
-    card('Top gainers', null, table(cols, m.gainers ?? [], { onRow })),
-    card('Top losers', null, table(cols, m.losers ?? [], { onRow }))));
-  frag.append(el('div', { class: 'grid g2' },
-    card('Unusual volume', 'largest deviation from 20-day average',
-      table(cols, m.most_active ?? [], { onRow })),
-    card('At 52-week extremes', 'breakout and breakdown watch',
-      table(cols, [...(m.near_52w_high ?? []), ...(m.near_52w_low ?? [])], { onRow }))));
-  return frag;
+  return el('div', {},
+    el('div', { class: 'grid g2' },
+      card('Top gainers', null, table(cols, m.gainers ?? [], { onRow })),
+      card('Top losers', null, table(cols, m.losers ?? [], { onRow }))),
+    el('details', { class: 'accordion' },
+      el('summary', {}, 'Unusual volume and 52-week extremes'),
+      el('div', { class: 'grid g2', style: 'padding:0 16px 4px' },
+        card('Unusual volume', 'largest deviation from 20-day average',
+          table(cols, m.most_active ?? [], { onRow })),
+        card('At 52-week extremes', 'breakout and breakdown watch',
+          table(cols, [...(m.near_52w_high ?? []), ...(m.near_52w_low ?? [])], { onRow })))));
 }
 
 // ----------------------------------------------------------------- sectors
-export function sectors(ctx) {
+function sectors(ctx) {
   const rows = ctx.bundle.sectors ?? [];
-  return el('div', {},
-    card('Sector rotation', 'equal-weighted average of tracked constituents',
+  return card('Sector rotation', 'equal-weighted average of tracked constituents',
       table([
         { key: 'sector', label: 'Sector' },
         { key: 'members', label: '#', render: (r) => el('span', { class: 'faint num' }, r.members) },
@@ -216,13 +225,11 @@ export function sectors(ctx) {
             el('span', { class: 'faint', style: 'font-size:11.5px' }, r.leaders.map(display).join(', ')) },
         { key: 'laggards', label: 'Laggards', sort: false, render: (r) =>
             el('span', { class: 'faint', style: 'font-size:11.5px' }, r.laggards.map(display).join(', ')) },
-      ], rows, { initialSort: { key: 'ret_5d', dir: -1 } })),
-    card('How to read this', null,
-      el('p', { class: 'dim', style: 'line-height:1.7;margin:0' },
-        'What matters is the change in ranking, not the level. A sector climbing from the '
-        + 'bottom of the 5-day column toward the top, while its average RSI is still below 60, '
-        + 'is rotation in progress rather than a move already over. Individual stocks inherit '
-        + 'most of their return from their sector.')));
+      ], rows, { initialSort: { key: 'ret_5d', dir: -1 } }),
+    el('p', { class: 'faint hint' },
+      'What matters is the change in ranking, not the level. A sector climbing the 5-day '
+      + 'column while its average RSI is still below 60 is rotation in progress rather '
+      + 'than a move already over.'));
 }
 
 // ------------------------------------------------------------------- ideas
@@ -432,35 +439,6 @@ export function alerts(ctx) {
 }
 
 // -------------------------------------------------------------------- news
-export function news(ctx) {
-  const { bundle } = ctx;
-  const bySym = bundle.news_by_symbol ?? {};
-  const frag = el('div');
-
-  frag.append(card('Market-wide headlines',
-    `${(bundle.market_news ?? []).length} stories, last ${ctx.meta?.news_window_days ?? 7} days`,
-    ...(bundle.market_news ?? []).slice(0, 30).map(newsItem)));
-
-  const symbols = Object.keys(bySym).sort();
-  if (symbols.length) {
-    frag.append(card('By watchlist stock', null,
-      ...symbols.map((sym) => {
-        const agg = (bundle.quotes.find((q) => q.symbol === sym) && bundle.predictions?.[sym]) || {};
-        return el('details', { class: 'accordion' },
-          el('summary', {},
-            el('span', { style: 'font-weight:660' }, display(sym)),
-            el('span', { class: 'faint', style: 'font-size:11.5px' }, `${bySym[sym].length} stories`),
-            el('span', { style: 'flex:1' }),
-            agg.sentiment_adjustment
-              ? pill(`news nudge ${(agg.sentiment_adjustment * 100).toFixed(1)}pp`,
-                  agg.sentiment_adjustment > 0 ? 'up' : 'down')
-              : null),
-          el('div', { class: 'body', style: 'padding-left:24px' }, ...bySym[sym].map(newsItem)));
-      })));
-  }
-  return frag;
-}
-
 function newsItem(n) {
   const kind = n.sentiment > 0.1 ? 'up' : n.sentiment < -0.1 ? 'down' : 'neutral';
   return el('div', { class: 'news-item' },
@@ -567,10 +545,39 @@ export function about(ctx) {
 // ------------------------------------------------------------- stock modal
 export async function stockDetail(ctx, symbol) {
   const q = quoteMap(ctx.bundle)[symbol];
-  if (!q) { toast(`No data for ${display(symbol)} yet`, 'error'); return; }
   const pred = ctx.bundle.predictions?.[symbol];
-  const stories = ctx.bundle.news_by_symbol?.[symbol] ?? [];
+  const stories = storiesFor(ctx, symbol);
   const cur = ctx.bundle.currency;
+
+  const watchBtn = ctx.watchSymbols.includes(symbol)
+    ? el('button', { class: 'btn sm', onclick: () => ctx.removeSymbol(symbol) }, '★ Unwatch')
+    : el('button', { class: 'btn sm primary', onclick: () => ctx.addSymbol(symbol) }, '☆ Watch');
+
+  const events = eventsFor(ctx, symbol).filter((e) => e.date >= todayISO()).slice(0, 6);
+  const eventsCard = events.length
+    ? card('Upcoming', 'results, board meetings, corporate actions',
+        ...events.map((e) => eventRow(e, ctx, { showDate: true })))
+    : null;
+  const newsCard = stories.length
+    ? card(`News (${stories.length})`, null, ...stories.map(newsItem))
+    : null;
+
+  if (!q) {
+    const pending = ctx.pending.has(symbol);
+    modal(display(symbol), el('div', {},
+      el('div', { class: 'row', style: 'margin-bottom:16px' },
+        el('span', { class: 'dim' }, pending
+          ? 'Fetching prices and news… this updates when the run finishes.'
+          : 'No price data yet.'),
+        el('span', { style: 'flex:1' }),
+        !pending && ctx.connected
+          ? el('button', { class: 'btn sm', onclick: () => ctx.fetchSymbols([symbol], 'data') }, 'Fetch now')
+          : null,
+        watchBtn),
+      eventsCard, newsCard,
+      !eventsCard && !newsCard ? el('div', { class: 'empty' }, 'Nothing collected for this ticker yet.') : null));
+    return;
+  }
 
   const chartBox = el('div', { id: 'chart' });
   const body = el('div', {},
@@ -580,9 +587,7 @@ export async function stockDetail(ctx, symbol) {
       el('span', { class: 'faint', style: 'font-size:12px' },
         `O ${fmt(q.open)} · H ${fmt(q.high)} · L ${fmt(q.low)} · Vol ${compact(q.volume)}`),
       el('span', { style: 'flex:1' }),
-      ctx.watchSymbols.includes(symbol)
-        ? el('button', { class: 'btn sm', onclick: () => ctx.removeSymbol(symbol) }, '★ Unwatch')
-        : el('button', { class: 'btn sm primary', onclick: () => ctx.addSymbol(symbol) }, '☆ Watch')),
+      watchBtn),
     chartBox,
     el('div', { class: 'grid g4', style: 'margin:16px 0' },
       stat('RSI(14)', fmt(q.rsi14, 0), q.rsi14 >= 70 ? 'overbought' : q.rsi14 <= 30 ? 'oversold' : 'neutral'),
@@ -622,9 +627,8 @@ export async function stockDetail(ctx, symbol) {
                 style: 'min-width:52px;text-align:right;font-size:11.5px' },
                 d.contribution > 0 ? `+${d.contribution}` : d.contribution))))
         : card('Model', null, el('div', { class: 'empty' }, 'No prediction — insufficient history.'))),
-    stories.length
-      ? card(`News (${stories.length})`, null, ...stories.map(newsItem))
-      : null,
+    eventsCard,
+    newsCard,
   );
 
   modal(`${display(symbol)} — ${q.name ?? ''}`, body);
@@ -643,14 +647,11 @@ async function drawChart(ctx, symbol, box) {
   }
   let candles;
   try {
-    const resp = await fetch(`${ctx.dataBase}/${ctx.bundle.market}/charts/${encodeURIComponent(symbol)}.json`
-      + `?v=${encodeURIComponent(ctx.meta?.generated_at ?? '')}`);
-    if (!resp.ok) throw new Error(String(resp.status));
-    candles = await resp.json();
+    candles = await ctx.loadChart(symbol);
+    if (!candles?.length) throw new Error('empty');
   } catch {
     box.replaceChildren(el('div', { class: 'empty' },
-      'No chart data for this symbol yet — charts are generated for watchlist stocks '
-      + 'on the next pipeline run.'));
+      'No chart yet — charts are generated for watchlist stocks when their data is fetched.'));
     return;
   }
 

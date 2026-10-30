@@ -14,43 +14,39 @@
 <body>
 
 <header class="topbar">
-  <button class="icon-btn nav-toggle" id="navToggle" aria-label="Menu">☰</button>
   <div class="brand"><span class="brand-dot"></span> Market Desk</div>
   <div class="market-switch" id="marketSwitch" role="tablist">
-    <button data-market="IN" class="active" role="tab">🇮🇳 India</button>
-    <button data-market="US" role="tab">🇺🇸 US</button>
+    <button data-market="IN" class="active" role="tab">India</button>
+    <button data-market="US" role="tab">US</button>
   </div>
+  <nav class="tabs" id="nav">
+    <button data-view="watchlist" class="active">Watchlist</button>
+    <button data-view="news">News <span class="badge hidden" id="newsBadge">0</span></button>
+    <button data-view="calendar">Calendar</button>
+    <button data-view="market">Market</button>
+    <div class="more">
+      <button class="more-btn" id="moreBtn" aria-haspopup="true" aria-expanded="false">More ▾</button>
+      <div class="more-list" id="moreList">
+        <button data-view="ideas">Ideas</button>
+        <button data-view="model">Model</button>
+        <button data-view="alerts">Alerts <span class="badge hidden" id="alertBadge">0</span></button>
+        <button data-view="sectornews">Sector board</button>
+        <button data-view="filings">Filings</button>
+        <button data-view="learn">Learn</button>
+        <button data-view="about">About</button>
+      </div>
+    </div>
+  </nav>
   <div class="spacer"></div>
-  <div class="stamp" id="stamp"></div>
-  <button class="icon-btn" id="refreshBtn" title="Reload data">⟳</button>
+  <button class="sync-chip" id="syncChip" type="button"></button>
+  <button class="icon-btn" id="refreshBtn" title="Refresh data">⟳</button>
   <button class="icon-btn" id="themeBtn" title="Toggle theme">◐</button>
   <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
 </header>
 
-<div class="layout">
-  <nav class="nav" id="nav">
-    <div class="nav-group">Market</div>
-    <button data-view="overview" class="active">◎ Overview</button>
-    <button data-view="watchlist">★ Watchlist</button>
-    <button data-view="movers">⇅ Movers</button>
-    <button data-view="sectors">▦ Sectors</button>
-    <div class="nav-group">Signals</div>
-    <button data-view="ideas">⚡ Ideas</button>
-    <button data-view="model">🤖 Model</button>
-    <button data-view="alerts">🔔 Alerts <span class="badge hidden" id="alertBadge">0</span></button>
-    <div class="nav-group">News</div>
-    <button data-view="news">📰 Feed <span class="badge hidden" id="newsBadge">0</span></button>
-    <button data-view="sectornews">🗂 Sector news</button>
-    <button data-view="filings">📄 Filings</button>
-    <div class="nav-group">Context</div>
-    <button data-view="learn">🎓 Learn</button>
-    <button data-view="about">ⓘ About</button>
-  </nav>
-
-  <main class="main" id="main">
-    <div class="loader"><div class="spin"></div><div>Loading market data…</div></div>
-  </main>
-</div>
+<main class="main" id="main">
+  <div class="loader"><div class="spin"></div><div>Loading market data…</div></div>
+</main>
 
 <div id="modalRoot"></div>
 <script src="js/app.js" type="module"></script>

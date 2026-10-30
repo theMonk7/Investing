@@ -26,21 +26,51 @@ specifically.
 
 | Feature | Where |
 |---|---|
-| Regime, breadth, VIX, one-paragraph daily brief | Overview |
-| Add/remove tracked stocks, synced to the repo | Watchlist |
-| Gainers, losers, unusual volume, 52-week extremes | Movers |
-| Equal-weighted sector rotation with leaders/laggards | Sectors |
-| Screener with the exact conditions behind every score | Ideas |
-| Relative-strength probability, per-feature attribution, holdout AUC, live scorecard | Model |
-| Alert history and the rules in force | Alerts |
-| Accumulating feed — new stories add, nothing is replaced; filters + search | Feed |
-| Sector board, sentiment history, per-sector story lists | Sector news |
-| SEC Form 4 / 8-K, India disclosures, catalysts, measured event reactions | Filings |
-| Contextual explanations of today's moves + a lesson library | Learn |
+| Your tickers: price, 5D/1M, RSI, news count + tone, next corporate event; add/remove, **Update now** | Watchlist |
+| News for your tickers, any typed ticker, sectors, or everything; filters + search | News |
+| Board meetings, results, dividends, splits, buybacks, AGMs in a chosen window, for your watchlist, all companies, or typed tickers | Calendar |
+| Regime, breadth, daily brief, gainers/losers, sector rotation | Market |
+| Screener with the exact conditions behind every score | More → Ideas |
+| Relative-strength probability, per-feature attribution, holdout AUC, live scorecard | More → Model |
+| Alert history and the rules in force | More → Alerts |
+| Sector board, sentiment history, per-sector story lists | More → Sector board |
+| SEC Form 4 / 8-K, India disclosures, catalysts, measured event reactions | More → Filings |
+| Contextual explanations of today's moves + a lesson library | More → Learn |
 | Phone push via ntfy / Telegram / WhatsApp / Discord | scheduled workflows |
 
 Both markets have their own tab; switch with the toggle or press <kbd>m</kbd>.
-<kbd>j</kbd> / <kbd>k</kbd> move between views.
+<kbd>j</kbd> / <kbd>k</kbd> move between the four main tabs.
+
+### Corporate calendar — where the dates come from
+
+Companies must tell the exchange about board meetings and record/ex-dates in
+advance (SEBI LODR Reg. 29 in India), so the exchange filings are the
+authoritative source. The RBI publishes monetary-policy dates, not company
+events.
+
+| Market | Source | Notes |
+|---|---|---|
+| India | NSE board-meeting and corporate-action filings | Official. BSE's API refuses scripted requests. NSE sometimes blocks cloud IPs; the source status line on the Calendar tab shows when. |
+| US | Nasdaq earnings and dividend calendars | Earnings for companies ≥ $10B market cap plus anything you track. |
+| Both | Yahoo Finance | **Estimates** only, marked "est."; dropped automatically once an official filing for the same event appears. |
+
+If NSE blocks the Actions runner, run `python run_all.py --mode events`
+locally and commit `data/IN/events.json`.
+
+### "Real-time" updates
+
+A static page cannot call Yahoo, NSE or Google News directly (no CORS), so
+fresh data always comes from a pipeline run. When GitHub sync is on:
+
+* **Add a ticker** → it's committed to `watchlist.json`, then a `quick` run
+  fetches its quote, chart, news and events.
+* **Update now** (Watchlist) → `quick` run for every watched ticker.
+* **↻ Refresh** → reloads the committed files immediately, then starts a
+  `news` run for the current market.
+
+The chip at the top right shows progress; the page reloads itself when the
+run finishes (typically 1–2 minutes). Without a token the dashboard is
+read-only and refreshes on the schedule.
 
 ---
 
@@ -81,10 +111,9 @@ You can also run it locally:
 python -m venv .venv && source .venv/bin/activate
 pip install -r pipeline/requirements.txt
 cd pipeline && python run_all.py --mode full
-# then serve the site
-cd .. && python -m http.server 8000 --directory web
-# and symlink or copy data/ next to web/ for local viewing:
-#   ln -s ../data web/data
+# other modes: quotes | news | events | quick --symbols "INFY.NS,AAPL"
+# then serve the repo root (the site finds ../data on its own)
+cd .. && ./dev.sh
 ```
 
 ---
@@ -249,11 +278,11 @@ raw figures shown elsewhere on the page.
 
 Three ways, in order of convenience:
 
-1. **In the dashboard** — Watchlist tab. Saves to your browser immediately. To
-   make it stick and drive alerts, turn on GitHub sync in ⚙ Settings: enter
-   owner, repo and a **fine-grained PAT** scoped to this one repository with
-   *Contents: read and write* (add *Actions: read and write* for the "Run
-   pipeline now" button). The token is stored only in your browser's
+1. **In the dashboard** — Watchlist tab. Without a token it saves to your
+   browser only. To make it stick, drive alerts and fetch data for new
+   tickers, connect GitHub in ⚙ Settings: owner, repo and a **fine-grained
+   PAT** scoped to this one repository with *Contents: read and write* and
+   *Actions: read and write*. The token is stored only in your browser's
    localStorage and is sent only to `api.github.com`.
 2. **Edit `watchlist.json`** in GitHub directly. The next pipeline run picks
    it up.
@@ -293,6 +322,7 @@ GitHub Actions (cron)
         ├─ fetch_prices.py   yfinance → OHLCV
         ├─ technicals.py     RSI, MACD, ATR, Bollinger, OBV, 52w, breadth
         ├─ fetch_news.py     public RSS + Google News per ticker
+        ├─ corporate_events.py  NSE filings, Nasdaq calendars, Yahoo estimates
         ├─ sentiment.py      VADER + finance lexicon (+ optional LLM)
         ├─ predict.py        logistic regression, time-based holdout
         ├─ movers.py         regime, sector rotation, transparent screener
@@ -326,7 +356,7 @@ needs no backend and costs nothing to host.
 horizon. It is relative strength, not direction.** 60% does not mean "likely
 to rise" — in a falling market the top-ranked stock usually still falls, just
 less than its peers. For a view on market direction, read the regime and
-breadth on Overview instead.
+breadth on the Market tab instead.
 
 That target was chosen after measuring the alternative. An absolute
 "will it go up" label scored **holdout AUC 0.49 — worse than a coin flip** —
@@ -366,8 +396,9 @@ PORT=8000 node tests/render-test.mjs      # every view in jsdom, real data
 PORT=8000 node tests/sector-test.mjs      # sector board, tooltips, feed filters
 ```
 
-The render test clicks through all twelve views in both markets, opens the
-stock and settings modals, adds a watchlist symbol, and fails on any thrown
+The render test clicks through every view in both markets, opens the
+stock and settings modals, adds and removes a watchlist ticker, exercises the
+calendar and news ticker filters, and fails on any thrown
 error, empty view, or `NaN` leaking into the page. The sector test additionally
 asserts that **every colour-encoded cell carries its own numeric label**, so
 the charts never depend on hue alone. All four run in CI on every push.

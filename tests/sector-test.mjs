@@ -6,10 +6,11 @@ const BASE = `http://127.0.0.1:${process.env.PORT || 8779}/web/`;
 const html = readFileSync(`${ROOT}/web/index.html`, 'utf8').replace(/<script[^>]*><\/script>/g, '');
 const dom = new JSDOM(html, { url: BASE, pretendToBeVisual: true });
 const { window } = dom;
-for (const k of ['window','document','location','Node','MouseEvent','Event','HTMLElement','getComputedStyle','localStorage','KeyboardEvent'])
+for (const k of ['window','document','location','Node','MouseEvent','Event','HTMLElement','getComputedStyle','localStorage','KeyboardEvent','history'])
   Object.defineProperty(globalThis, k, { value: k==='window'?window:window[k], configurable:true, writable:true });
 globalThis.structuredClone ??= (o)=>JSON.parse(JSON.stringify(o));
 globalThis.setInterval = () => 0;
+window.scrollTo = () => {};
 const rf = globalThis.fetch;
 globalThis.fetch = (i, init) => rf(new URL(String(i), BASE).href, init);
 window.fetch = globalThis.fetch;
@@ -55,19 +56,29 @@ if (!tip) errors.push('hover tooltip did not appear');
 else console.log('tooltip  :', JSON.stringify(tip.textContent.slice(0,90)));
 
 // feed filters
-click(doc.querySelector('#nav button[data-view="news"]'));
+click(doc.querySelector('#nav [data-view="news"]'));
 await sleep(250);
+click(doc.querySelector('#main .seg button[data-scope="all"]'));
+await sleep(150);
 const before = doc.querySelectorAll('#main .news-item').length;
-// selects are [sector, event, kind, tone] -- the search box is an <input>
-const sel = doc.querySelectorAll('#main .feed-controls select')[2]; // kind
-sel.value = 'filing';
+const sel = doc.querySelector('#main select[data-filter="kind"]');
+sel.value = 'filings';
 sel.dispatchEvent(new window.Event('change',{bubbles:true}));
 await sleep(200);
 const after = doc.querySelectorAll('#main .news-item').length;
-console.log(`feed filter kind=filing: ${before} -> ${after}`);
+console.log(`feed filter kind=filings: ${before} -> ${after}`);
 if (after === before && before > 0) errors.push('feed kind filter had no effect');
 
-const search = doc.querySelector('#main input[type="search"]');
+// Sectors scope shows the sector chips and narrows to sector stories.
+click(doc.querySelector('#main .seg button[data-scope="sectors"]'));
+sel.value = 'news';
+sel.dispatchEvent(new window.Event('change',{bubbles:true}));
+await sleep(150);
+const chips = doc.querySelectorAll('#main .sector-chips:not(.hidden) .chip-toggle').length;
+console.log('sector chips:', chips, '| sector stories:', doc.querySelectorAll('#main .news-item').length);
+if (!chips) errors.push('sector chips missing in Sectors scope');
+
+const search = doc.querySelector('#newsSearch');
 search.value = 'zzzznomatch';
 search.dispatchEvent(new window.Event('input',{bubbles:true}));
 await sleep(200);

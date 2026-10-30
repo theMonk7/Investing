@@ -1,8 +1,10 @@
-// Bootstrap, state, routing, settings.
+// Bootstrap, state, routing, data loading, on-demand updates, settings.
 
+import * as calendar from './calendar.js';
 import * as gh from './gh.js';
-import { $, $$, card, el, lsGet, lsSet, modal, pill, toast } from './lib.js';
+import { $, $$, ago, card, display, el, lsGet, lsSet, modal, pill, toast } from './lib.js';
 import * as newsViews from './news-views.js';
+import * as sync from './sync.js';
 import * as views from './views.js';
 
 // Pages publishes web/ with data/ copied inside it. A local `python -m
@@ -19,61 +21,105 @@ async function resolveDataBase() {
   }
 }
 const VIEWS = {
-  overview: views.overview, watchlist: views.watchlist, movers: views.movers,
-  sectors: views.sectors, ideas: views.ideas, model: views.model, alerts: views.alerts,
-  news: newsViews.newsFeed, sectornews: newsViews.sectorNews, filings: newsViews.filings,
-  learn: views.learn, about: views.about,
+  watchlist: views.watchlist, news: newsViews.newsFeed, calendar: calendar.calendar,
+  market: views.market, ideas: views.ideas, model: views.model, alerts: views.alerts,
+  sectornews: newsViews.sectorNews, filings: newsViews.filings, learn: views.learn,
+  about: views.about,
 };
+const MAIN_TABS = ['watchlist', 'news', 'calendar', 'market'];
+// Old bookmarks keep working.
+const ALIASES = { overview: 'market', movers: 'market', sectors: 'market' };
+const MARKET_NAME = { IN: 'India', US: 'US' };
+const SYMBOL_RE = /^[A-Z0-9^][A-Z0-9.&=-]{0,19}$/;
+
+const routeOf = (hash) => {
+  const view = ALIASES[hash] ?? hash;
+  return VIEWS[view] ? view : 'watchlist';
+};
+const marketOf = (sym) => (/\.(NS|BO)$/.test(sym) ? 'IN' : 'US');
 
 const state = {
   market: lsGet('mktdesk.market', 'IN'),
-  view: location.hash.slice(1) || 'overview',
+  view: routeOf(location.hash.slice(1)),
   bundles: {},
   feeds: {},
+  events: {},
   meta: null,
   curriculum: [],
   scorecard: null,
   watchlist: null,
+  source: 'pages',
+  saving: new Set(),       // tickers whose watchlist commit is in flight
 };
 
 // --------------------------------------------------------------- data load
-async function getJSON(path) {
+async function pagesJSON(path) {
   const resp = await fetch(`${DATA_BASE}/${path}?t=${Date.now()}`, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`${path}: HTTP ${resp.status}`);
   return resp.json();
 }
 
-async function loadAll(force = false) {
-  const [meta, curriculum, scorecard] = await Promise.all([
-    getJSON('meta.json').catch(() => null),
-    getJSON('curriculum.json').catch(() => []),
-    getJSON('scorecard.json').catch(() => null),
-  ]);
-  state.meta = meta;
-  state.curriculum = curriculum;
-  state.scorecard = scorecard;
-
-  for (const market of ['IN', 'US']) {
-    if (force || !state.bundles[market]) {
-      state.bundles[market] = await getJSON(`${market}/bundle.json`).catch(() => null);
-      state.feeds[market] = await getJSON(`${market}/feed.json`).catch(() => null);
+/**
+ * Connected to GitHub: read straight from the branch, so a run that has just
+ * finished shows up at once (Pages redeploys a minute or two later).
+ * Otherwise, or if the API fails, read the published copy.
+ */
+async function loadAll() {
+  let repo = gh.configured();
+  let repoError = null;
+  const get = async (path) => {
+    if (repo) {
+      try { return await gh.readJSON(`data/${path}`); }
+      catch (err) {
+        if (err.status === 404) return null;
+        repo = false;
+        repoError = err.message;
+      }
     }
-  }
-  reconcileWatchlist();
+    return pagesJSON(path).catch(() => null);
+  };
+
+  const [meta, scorecard, curriculum, ...perMarket] = await Promise.all([
+    get('meta.json'),
+    get('scorecard.json'),
+    state.curriculum.length ? state.curriculum : pagesJSON('curriculum.json').catch(() => []),
+    ...['IN', 'US'].flatMap((m) =>
+      [get(`${m}/bundle.json`), get(`${m}/feed.json`), get(`${m}/events.json`)]),
+  ]);
+  Object.assign(state, { meta, scorecard, curriculum: curriculum ?? [] });
+  ['IN', 'US'].forEach((m, i) => {
+    state.bundles[m] = perMarket[i * 3];
+    state.feeds[m] = perMarket[i * 3 + 1];
+    state.events[m] = perMarket[i * 3 + 2];
+  });
+  state.source = repo ? 'repo' : 'pages';
+  await loadWatchlist(repo);
   decorate();
+  if (repoError) toast(`GitHub read failed, showing published data. ${repoError}`, 'error');
 }
 
-/** localStorage is authoritative for what the *user* sees; the repo file is
- *  authoritative for what the *pipeline* fetches. Local wins on conflict, and
- *  the settings modal is where you push local back to the repo. */
-function reconcileWatchlist() {
-  const local = gh.localWatchlist();
-  if (local) { state.watchlist = local; return; }
-  state.watchlist = {
+/** Connected: watchlist.json in the repo is the truth, since every edit is
+ *  committed. Disconnected: this browser's copy, seeded from the pipeline's. */
+async function loadWatchlist(repo) {
+  if (repo && !state.saving.size) {
+    try {
+      const wl = await gh.readJSON('watchlist.json');
+      state.watchlist = { IN: wl.IN ?? [], US: wl.US ?? [] };
+      gh.saveLocalWatchlist(state.watchlist);
+      return;
+    } catch { /* fall back to the local copy */ }
+  }
+  state.watchlist = state.watchlist ?? gh.localWatchlist() ?? {
     IN: state.bundles.IN?.watchlist ?? [],
     US: state.bundles.US?.watchlist ?? [],
   };
   gh.saveLocalWatchlist(state.watchlist);
+}
+
+async function loadChart(sym) {
+  const path = `${marketOf(sym)}/charts/${sym}.json`;
+  if (state.source === 'repo') return gh.readJSON(`data/${path}`);
+  return pagesJSON(`${marketOf(sym)}/charts/${encodeURIComponent(sym)}.json`);
 }
 
 /** Flatten prediction probability onto quotes so the table can sort on it. */
@@ -90,52 +136,143 @@ function decorate() {
 }
 
 // ------------------------------------------------------------- watchlist ops
-async function mutateWatchlist(fn, message) {
-  const next = structuredClone(state.watchlist);
-  fn(next);
-  state.watchlist = next;
-  gh.saveLocalWatchlist(next);
+/** "wipro" on the India tab becomes WIPRO.NS; returns null if not a ticker. */
+function normalise(raw) {
+  let sym = String(raw ?? '').trim().toUpperCase().replace(/\s+/g, '');
+  if (!sym) return null;
+  const market = /\.(NS|BO)$/.test(sym) ? 'IN' : state.market;
+  if (market === 'IN' && !sym.includes('.') && !sym.startsWith('^')) sym += '.NS';
+  return SYMBOL_RE.test(sym) ? { sym, market: marketOf(sym) } : null;
+}
+
+// Commits run one after another so two quick edits cannot race on the sha.
+let writeChain = Promise.resolve();
+
+function commitWatchlist(message) {
+  const snapshot = structuredClone(state.watchlist);
+  const run = writeChain.then(async () => {
+    const remote = await gh.fetchRemoteWatchlist().catch(() => ({ watchlist: {} }));
+    await gh.pushWatchlist({ ...remote.watchlist, IN: snapshot.IN, US: snapshot.US, version: 1 },
+      message);
+  });
+  writeChain = run.catch(() => {});
+  return run;
+}
+
+function saveLocally() {
+  gh.saveLocalWatchlist(state.watchlist);
   decorate();
-  render();
+}
+
+async function addSymbols(raws) {
+  const added = [];
+  for (const raw of raws) {
+    const n = normalise(raw);
+    if (!n) { toast(`"${raw}" is not a valid ticker`, 'error'); continue; }
+    const list = state.watchlist[n.market];
+    if (list.includes(n.sym)) { toast(`${display(n.sym)} is already on your watchlist`); continue; }
+    list.push(n.sym);
+    added.push(n);
+  }
+  if (!added.length) return;
+  saveLocally();
+  const syms = added.map((a) => a.sym);
 
   if (!gh.configured()) {
-    toast('Saved to this browser. Turn on GitHub sync to make it stick.', 'info');
+    render();
+    toast('Saved in this browser. Connect GitHub (⚙) to fetch its data right away.');
     return;
   }
+  syms.forEach((s) => state.saving.add(s));
+  render();
   try {
-    const remote = await gh.fetchRemoteWatchlist().catch(() => ({ watchlist: {} }));
-    const merged = { ...remote.watchlist, ...next, version: 1 };
-    await gh.pushWatchlist(merged, message);
-    toast('Committed to watchlist.json', 'ok');
+    // Commit first: the run reads watchlist.json to decide what to keep.
+    await commitWatchlist(`chore: watch ${syms.join(', ')}`);
+    sync.request({
+      mode: 'quick', markets: [...new Set(added.map((a) => a.market))], symbols: syms,
+      label: syms.map(display).join(', '),
+    });
   } catch (err) {
-    toast(`GitHub sync failed: ${err.message}`, 'error');
+    toast(`Could not save to GitHub: ${err.message}`, 'error');
+  } finally {
+    syms.forEach((s) => state.saving.delete(s));
+    render();
   }
 }
 
-const addSymbol = (sym) => {
-  const list = state.watchlist[state.market];
-  if (list.includes(sym)) { toast(`${sym} is already watched`); return; }
-  mutateWatchlist((wl) => wl[state.market].push(sym), `chore: watch ${sym}`);
-};
+async function removeSymbol(sym) {
+  const market = state.watchlist.IN.includes(sym) ? 'IN' : 'US';
+  state.watchlist[market] = state.watchlist[market].filter((s) => s !== sym);
+  saveLocally();
+  render();
+  if (!gh.configured()) return;
+  try { await commitWatchlist(`chore: unwatch ${sym}`); }
+  catch (err) { toast(`Could not save to GitHub: ${err.message}`, 'error'); }
+}
 
-const removeSymbol = (sym) =>
-  mutateWatchlist((wl) => {
-    wl[state.market] = wl[state.market].filter((s) => s !== sym);
-  }, `chore: unwatch ${sym}`);
+/** Fetch prices, news and events for tickers without watching them. */
+function fetchSymbols(raws, what = 'data') {
+  if (!gh.configured()) { openSettings(); return; }
+  const list = raws.map(normalise).filter(Boolean);
+  if (!list.length) return;
+  sync.request({
+    mode: 'quick', markets: [...new Set(list.map((n) => n.market))],
+    symbols: list.map((n) => n.sym),
+    label: `${what} for ${list.map((n) => display(n.sym)).join(', ')}`,
+  });
+  render();
+}
+
+function updateWatchlist() {
+  if (!gh.configured()) { openSettings(); return; }
+  const syms = state.watchlist[state.market];
+  if (!syms.length) return;
+  sync.request({ mode: 'quick', markets: [state.market], symbols: syms,
+    label: `${MARKET_NAME[state.market]} watchlist` });
+  render();
+}
+
+function fetchEvents() {
+  if (!gh.configured()) { openSettings(); return; }
+  sync.request({ mode: 'events', markets: [state.market],
+    label: `${MARKET_NAME[state.market]} calendar` });
+  render();
+}
+
+/** Refresh: show whatever is committed now, then fetch fresh data. */
+async function refresh() {
+  const btn = $('#refreshBtn');
+  btn.classList.add('spinning');
+  try { await loadAll(); render(); }
+  finally { btn.classList.remove('spinning'); }
+  if (!gh.configured()) {
+    toast('Reloaded the published data. Connect GitHub (⚙) to fetch fresh data on demand.');
+    return;
+  }
+  sync.request({ mode: 'news', markets: [state.market],
+    label: `${MARKET_NAME[state.market]} refresh` });
+}
 
 // ------------------------------------------------------------------ context
 function context() {
+  const m = state.market;
   return {
-    bundle: state.bundles[state.market],
-    feed: state.feeds[state.market],
+    market: m,
+    bundle: state.bundles[m],
+    feed: state.feeds[m],
+    events: state.events[m],
     meta: state.meta,
     curriculum: state.curriculum,
     scorecard: state.scorecard,
-    get dataBase() { return DATA_BASE; },
-    watchSymbols: state.watchlist?.[state.market] ?? [],
-    syncLabel: gh.configured() ? 'synced to GitHub' : 'saved in this browser only',
-    addSymbol, removeSymbol, openSettings,
+    watchSymbols: state.watchlist?.[m] ?? [],
+    connected: gh.configured(),
+    pending: new Set([...sync.pendingSymbols(), ...state.saving]),
+    syncBusy: sync.busy(),
+    addSymbol: (sym) => addSymbols([sym]),
+    addSymbols, removeSymbol, fetchSymbols, fetchEvents, updateWatchlist, openSettings,
+    normalise, loadChart,
     rerender: render,
+    go: navigate,
     openStock: (sym) => views.stockDetail(context(), sym),
   };
 }
@@ -144,6 +281,11 @@ function context() {
 function render() {
   const main = $('#main');
   const bundle = state.bundles[state.market];
+
+  $$('#nav [data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
+  $('#moreBtn').classList.toggle('active', !MAIN_TABS.includes(state.view));
+  $$('#marketSwitch button').forEach((b) => b.classList.toggle('active', b.dataset.market === state.market));
+  updateChip();
 
   if (!bundle) {
     main.replaceChildren(el('div', { class: 'banner err' },
@@ -154,17 +296,7 @@ function render() {
     return;
   }
 
-  const view = VIEWS[state.view] ?? views.overview;
-  main.replaceChildren(view(context()));
-  main.scrollTop = 0;
-
-  $$('#nav button').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
-  $$('#marketSwitch button').forEach((b) => b.classList.toggle('active', b.dataset.market === state.market));
-
-  const stamp = $('#stamp');
-  stamp.textContent = state.meta?.generated_at
-    ? `updated ${new Date(state.meta.generated_at).toLocaleString()}`
-    : 'never updated';
+  main.replaceChildren(VIEWS[state.view](context()));
 
   const count = (bundle.alerts ?? []).filter(
     (a) => Date.now() - new Date(a.ts).getTime() < 86400e3).length;
@@ -180,9 +312,79 @@ function render() {
         .filter((i) => (i.first_seen ?? '') > lastSeen).length
     : 0;
   const newsBadge = $('#newsBadge');
-  if (newsBadge) {
-    newsBadge.textContent = unread > 99 ? '99+' : unread;
-    newsBadge.classList.toggle('hidden', unread === 0);
+  newsBadge.textContent = unread > 99 ? '99+' : unread;
+  newsBadge.classList.toggle('hidden', unread === 0);
+}
+
+// ---------------------------------------------------------------- sync chip
+let chipTimer = null;
+
+function updateChip() {
+  const chip = $('#syncChip');
+  const job = sync.current();
+  const stamp = state.bundles[state.market]?.generated_at ?? state.meta?.generated_at;
+  clearTimeout(chipTimer);
+
+  if (sync.busy()) {
+    const secs = Math.max(0, Math.round((Date.now() - Date.parse(job.startedAt)) / 1000));
+    const phase = job.status === 'in_progress' ? 'Updating' : 'Starting';
+    chip.className = 'sync-chip running';
+    chip.textContent = `${phase} ${job.label || 'data'}… ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+    chip.title = 'A pipeline run is fetching fresh data. Click to open it on GitHub.';
+    chipTimer = setTimeout(updateChip, 1000);
+    return;
+  }
+  const failed = job && job.conclusion && job.conclusion !== 'success'
+    && Date.now() - Date.parse(job.startedAt) < 3600e3;
+  if (failed && gh.configured()) {
+    chip.className = 'sync-chip failed';
+    chip.textContent = 'Update failed · retry';
+    chip.title = job.error || `Run ended: ${job.conclusion}`;
+    return;
+  }
+  chip.className = `sync-chip${gh.configured() ? '' : ' readonly'}`;
+  chip.textContent = `Updated ${ago(stamp)}${gh.configured() ? '' : ' · read-only'}`;
+  chip.title = gh.configured()
+    ? `Reading live from GitHub (${state.source}). Click to fetch fresh data.`
+    : 'Showing the published data. Click to connect GitHub and update on demand.';
+}
+
+function onChipClick() {
+  const job = sync.current();
+  if (sync.busy()) {
+    if (job.url) window.open(job.url, '_blank', 'noopener');
+  } else if (!gh.configured()) {
+    openSettings();
+  } else if ($('#syncChip').classList.contains('failed')) {
+    sync.retry();
+  } else {
+    refresh();
+  }
+}
+
+let lastReported = null;
+
+function onSyncChange(job) {
+  updateChip();
+  if (!job || job.status !== 'completed' || job.requestId === lastReported) return;
+  lastReported = job.requestId;
+  if (job.conclusion !== 'success' && job.conclusion !== 'cancelled') {
+    toast(job.error || `Update ${job.conclusion ?? 'failed'}. Open the run from the status chip.`, 'error');
+  }
+  // Swap "Fetching…" placeholders back, unless the user is mid-typing.
+  if (job.conclusion !== 'success' && !document.activeElement?.matches('#main input')) render();
+}
+
+async function onSyncSuccess(job) {
+  await loadAll();
+  render();
+  const missing = job.symbols.filter((s) =>
+    (state.watchlist[marketOf(s)] ?? []).includes(s)
+    && !(state.bundles[marketOf(s)]?.quotes ?? []).some((q) => q.symbol === s));
+  if (missing.length) {
+    toast(`No price data for ${missing.map(display).join(', ')}. Check the ticker on Yahoo Finance.`, 'error');
+  } else {
+    toast(`Updated ${job.label || 'data'}`, 'ok');
   }
 }
 
@@ -191,10 +393,11 @@ function openSettings() {
   const s = gh.settings();
   const guess = gh.guessRepo();
   const owner = el('input', { type: 'text', value: s.owner || guess?.owner || '', placeholder: 'your-github-username' });
-  const repo = el('input', { type: 'text', value: s.repo || guess?.repo || '', placeholder: 'market-desk' });
+  const repo = el('input', { type: 'text', value: s.repo || guess?.repo || '', placeholder: 'repository' });
   const branch = el('input', { type: 'text', value: s.branch || 'main', style: 'max-width:140px' });
   const token = el('input', { type: 'password', value: s.token || '', placeholder: 'github_pat_...' });
-  const status = el('div', { class: 'faint', style: 'font-size:12px;min-height:18px' });
+  const status = el('div', { class: 'faint', style: 'font-size:12px;min-height:18px;margin-bottom:12px' },
+    gh.configured() ? `Connected to ${s.owner}/${s.repo}.` : 'Not connected: the dashboard is read-only.');
 
   const field = (label, input, hint) => el('div', { style: 'margin-bottom:14px' },
     el('label', { style: 'display:block;font-size:12px;font-weight:650;margin-bottom:5px' }, label),
@@ -205,64 +408,67 @@ function openSettings() {
   Object.assign(repo.style, { width: '100%' });
   Object.assign(token.style, { width: '100%' });
 
+  const connect = async () => {
+    gh.saveSettings({ owner: owner.value.trim(), repo: repo.value.trim(),
+      branch: branch.value.trim() || 'main', token: token.value.trim() });
+    status.textContent = 'Checking…';
+    try {
+      const info = await gh.testConnection();
+      if (!info.permissions?.push) {
+        status.textContent = `Reached ${info.full_name}, but the token cannot write. `
+          + 'Give it Contents: read and write.';
+        return;
+      }
+      status.textContent = `Connected to ${info.full_name}. Syncing watchlist…`;
+      const extras = await adoptRemoteWatchlist();
+      await loadAll();
+      render();
+      status.textContent = `Connected to ${info.full_name}.`
+        + (extras.length ? ` Added ${extras.map(display).join(', ')} from this browser and started fetching.` : '');
+    } catch (err) {
+      status.textContent = `Could not connect: ${err.message}`;
+    }
+  };
+
   modal('Settings',
-    card('GitHub sync', 'optional',
+    card('GitHub connection', gh.configured() ? 'connected' : 'optional',
       el('p', { class: 'dim', style: 'font-size:12.5px;line-height:1.7;margin:0 0 16px' },
-        'Without this, watchlist changes live only in this browser and the scheduled '
-        + 'pipeline keeps using whatever is in watchlist.json. With it, changes commit '
-        + 'straight to the repo, so news fetching and phone alerts follow your watchlist.'),
+        'Connect to update on demand. Refresh, Update and adding a ticker start a short '
+        + 'pipeline run in GitHub Actions (about 1–2 minutes); the page follows it and '
+        + 'reloads when it finishes. Your watchlist is saved to watchlist.json, so '
+        + 'scheduled runs and phone alerts follow it too.'),
       field('Owner', owner),
       field('Repository', repo),
       field('Branch', branch),
       field('Fine-grained personal access token', token,
-        ['Create at github.com/settings/personal-access-tokens — scope it to this one ',
-         'repository with Contents: read and write (add Actions: read and write if you ',
-         'want the Refresh button to trigger a pipeline run). The token is stored only in ',
-         'this browser\'s localStorage and is sent only to api.github.com. Treat it like a ',
-         'password: anyone with access to this browser profile can read it.'].join('')),
+        ['Create at github.com/settings/personal-access-tokens, scoped to this one ',
+         'repository, with Contents: read and write and Actions: read and write. ',
+         'It is stored only in this browser\'s localStorage and sent only to ',
+         'api.github.com. Treat it like a password.'].join('')),
       status,
       el('div', { class: 'row' },
-        el('button', {
-          class: 'btn primary',
-          onclick: async () => {
-            gh.saveSettings({ owner: owner.value.trim(), repo: repo.value.trim(),
-              branch: branch.value.trim() || 'main', token: token.value.trim() });
-            status.textContent = 'Testing…';
-            try {
-              const info = await gh.testConnection();
-              status.innerHTML = `✅ Connected to <b>${info.full_name}</b>`
-                + (info.permissions?.push ? ' (write access confirmed)' : ' (read-only — writes will fail)');
-            } catch (err) {
-              status.innerHTML = `❌ ${err.message}`;
-            }
-          },
-        }, 'Save & test'),
-        el('button', {
-          class: 'btn',
-          onclick: async () => {
-            try { await gh.pushWatchlist({ ...state.watchlist, version: 1 },
-              'chore: sync watchlist from dashboard'); toast('Pushed', 'ok'); }
-            catch (err) { toast(err.message, 'error'); }
-          },
-        }, '↑ Push watchlist now'),
-        el('button', {
-          class: 'btn',
-          onclick: async () => {
-            try {
-              const { watchlist } = await gh.fetchRemoteWatchlist();
-              state.watchlist = { IN: watchlist.IN ?? [], US: watchlist.US ?? [] };
-              gh.saveLocalWatchlist(state.watchlist);
-              decorate(); render(); toast('Pulled from repo', 'ok');
-            } catch (err) { toast(err.message, 'error'); }
-          },
-        }, '↓ Pull from repo'),
-        el('button', {
-          class: 'btn',
-          onclick: async () => {
-            try { await gh.triggerRefresh('news'); toast('Pipeline run triggered', 'ok'); }
-            catch (err) { toast(`Needs Actions: write — ${err.message}`, 'error'); }
-          },
-        }, '▶ Run pipeline now'))),
+        el('button', { class: 'btn primary', onclick: connect }, 'Save & connect'),
+        gh.configured()
+          ? el('button', {
+              class: 'btn',
+              onclick: () => {
+                gh.saveSettings({ token: '' });
+                token.value = '';
+                status.textContent = 'Disconnected. The token was removed from this browser.';
+                loadAll().then(render);
+              },
+            }, 'Disconnect')
+          : null,
+        gh.configured()
+          ? el('button', {
+              class: 'btn',
+              title: 'Prices, news, model retrain and calendar for both markets. Takes ~10 minutes.',
+              onclick: () => {
+                sync.request({ mode: 'full', markets: ['IN', 'US'], label: 'full rebuild' });
+                toast('Full rebuild queued', 'ok');
+              },
+            }, 'Run full rebuild')
+          : null)),
 
     card('Phone alerts', 'configured in the repo, not here',
       el('p', { class: 'dim', style: 'font-size:12.5px;line-height:1.8;margin:0' },
@@ -276,12 +482,8 @@ function openSettings() {
       el('div', { class: 'row', style: 'margin-top:12px' },
         ...['ntfy', 'telegram', 'whatsapp', 'discord'].map((c) => pill(c, 'neutral')))),
 
-    card('Display', null,
+    card('This browser', null,
       el('div', { class: 'row' },
-        el('button', {
-          class: 'btn',
-          onclick: () => { gh.saveSettings({ token: '' }); toast('Token cleared', 'ok'); },
-        }, 'Clear stored token'),
         el('button', {
           class: 'btn',
           onclick: () => {
@@ -291,18 +493,55 @@ function openSettings() {
         }, 'Reset all local data'))));
 }
 
-// -------------------------------------------------------------------- wire
-function wire() {
-  $$('#nav button').forEach((b) => b.addEventListener('click', () => {
-    // Leaving the feed marks everything currently loaded as seen.
-    if (state.view === 'news' && b.dataset.view !== 'news') {
-      lsSet(`mktdesk.lastSeen.${state.market}`, new Date().toISOString());
+/** On connect the repo's watchlist wins, but tickers added in this browser
+ *  while disconnected are added to it rather than dropped. */
+async function adoptRemoteWatchlist() {
+  const { watchlist: remote } = await gh.fetchRemoteWatchlist()
+    .catch(() => ({ watchlist: {} }));
+  const local = state.watchlist ?? { IN: [], US: [] };
+  const merged = { IN: [...(remote.IN ?? [])], US: [...(remote.US ?? [])] };
+  const extras = [];
+  for (const m of ['IN', 'US']) {
+    for (const sym of local[m] ?? []) {
+      if (!merged[m].includes(sym)) { merged[m].push(sym); extras.push(sym); }
     }
-    state.view = b.dataset.view;
-    location.hash = state.view;
-    $('#nav').classList.remove('open');
-    render();
-  }));
+  }
+  state.watchlist = merged;
+  saveLocally();
+  if (extras.length) {
+    await commitWatchlist(`chore: watch ${extras.join(', ')}`);
+    sync.request({ mode: 'quick', markets: [...new Set(extras.map(marketOf))],
+      symbols: extras, label: extras.map(display).join(', ') });
+  }
+  return extras;
+}
+
+// -------------------------------------------------------------------- wire
+function navigate(view) {
+  // Leaving the feed marks everything currently loaded as seen.
+  if (state.view === 'news' && view !== 'news') {
+    lsSet(`mktdesk.lastSeen.${state.market}`, new Date().toISOString());
+  }
+  state.view = routeOf(view);
+  $('#moreList').classList.remove('open');
+  if (location.hash.slice(1) !== state.view) history.replaceState(null, '', `#${state.view}`);
+  render();
+  window.scrollTo(0, 0);
+}
+
+function wire() {
+  $$('#nav [data-view]').forEach((b) =>
+    b.addEventListener('click', () => navigate(b.dataset.view)));
+
+  const more = $('#moreList');
+  $('#moreBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    more.classList.toggle('open');
+    $('#moreBtn').setAttribute('aria-expanded', more.classList.contains('open'));
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.more')) more.classList.remove('open');
+  });
 
   $$('#marketSwitch button').forEach((b) => b.addEventListener('click', () => {
     state.market = b.dataset.market;
@@ -317,40 +556,33 @@ function wire() {
   });
 
   $('#settingsBtn').addEventListener('click', openSettings);
-  $('#navToggle').addEventListener('click', () => $('#nav').classList.toggle('open'));
-
-  $('#refreshBtn').addEventListener('click', async () => {
-    $('#refreshBtn').textContent = '⟳';
-    $('#refreshBtn').style.animation = 's .7s linear infinite';
-    await loadAll(true);
-    render();
-    $('#refreshBtn').style.animation = '';
-    toast('Reloaded', 'ok');
-  });
+  $('#refreshBtn').addEventListener('click', refresh);
+  $('#syncChip').addEventListener('click', onChipClick);
 
   window.addEventListener('hashchange', () => {
-    const next = location.hash.slice(1);
-    if (VIEWS[next]) { state.view = next; render(); }
+    const next = routeOf(location.hash.slice(1));
+    if (next !== state.view) navigate(next);
   });
 
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') more.classList.remove('open');
     if (e.target.matches('input, textarea, select')) return;
-    const order = Object.keys(VIEWS);
     if (e.key === 'm') {
       state.market = state.market === 'IN' ? 'US' : 'IN';
       lsSet('mktdesk.market', state.market);
       render();
     } else if (e.key === 'j' || e.key === 'k') {
-      const i = order.indexOf(state.view);
-      state.view = order[(i + (e.key === 'j' ? 1 : order.length - 1)) % order.length];
-      location.hash = state.view;
-      render();
+      const i = Math.max(0, MAIN_TABS.indexOf(state.view));
+      navigate(MAIN_TABS[(i + (e.key === 'j' ? 1 : MAIN_TABS.length - 1)) % MAIN_TABS.length]);
     }
   });
 
-  // Refresh in the background every 5 minutes; the pipeline commits more often
-  // than that during market hours.
-  setInterval(() => loadAll(true).then(render).catch(() => {}), 300_000);
+  // Pick up scheduled runs in the background. Skipped while typing so a
+  // re-render never eats what you are entering.
+  setInterval(() => {
+    if (document.activeElement?.matches('#main input')) return;
+    loadAll().then(render).catch(() => {});
+  }, 300_000);
 }
 
 // -------------------------------------------------------------------- boot
@@ -367,4 +599,8 @@ function wire() {
     return;
   }
   render();
+  // A run that ended before this page load was already reported.
+  if (!sync.busy()) lastReported = sync.current()?.requestId ?? null;
+  sync.subscribe(onSyncChange);
+  sync.init({ onSuccess: onSyncSuccess });
 })();

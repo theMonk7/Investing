@@ -9,6 +9,12 @@ dataset construction, model training, quote assembly, regime and sector
 aggregation, the screener, lexicon sentiment, event detection, and the
 template teaching output. Catches shape and key errors before a real run.
 
+Also covers the corporate calendar without touching NSE or Nasdaq: the
+filing parsers and type classifier, the rule that an estimate never
+overwrites an exchange-sourced row, export de-duplication of Yahoo estimates
+once an official date exists, and `run_all.parse_symbols` rejecting
+anything that isn't a ticker.
+
 ```bash
 python tests/test_pipeline_offline.py
 ```
@@ -29,7 +35,9 @@ python tests/test_config_env.py
 
 Loads the real dashboard in jsdom against the committed `data/` snapshots,
 clicks through every view in both markets, opens the stock and settings
-modals, adds a watchlist symbol, and fails on any thrown error, empty view,
+modals, adds and removes a watchlist ticker (including one with no data yet),
+exercises the calendar's window/scope/type/ticker filters and the news
+ticker filter, and fails on any thrown error, empty view,
 or `NaN` / `undefined` leaking into the rendered text.
 
 jsdom does not execute `<script type="module">`, so the test imports the
@@ -45,7 +53,7 @@ PORT=8000 node tests/render-test.mjs
 ## `sector-test.mjs`
 
 Drills into the sector board: opens a sector panel, fires a hover tooltip,
-exercises the feed's kind filter and search, and asserts that **every
+exercises the news view's scope, kind filter, sector chips and search, and asserts that **every
 colour-encoded cell carries a numeric label** and the diverging legend is
 present — the accessibility rule that keeps the charts readable without
 colour.

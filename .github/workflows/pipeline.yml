@@ -1,4 +1,10 @@
 name: Market pipeline
+# Dashboard-dispatched runs carry a request id in their title so the page can
+# find and follow the run it started.
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+      && format('{0} {1} {2}', inputs.mode, inputs.symbols, inputs.request_id)
+      || 'Market pipeline' }}
 
 on:
   schedule:
@@ -11,13 +17,19 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "quotes (fast) | news (news+teaching) | full (retrain model)"
+        description: "quotes (fast) | news (news+calendar) | full (retrain) | quick (just the symbols) | events (calendar only)"
         type: choice
-        options: [quotes, news, full]
+        options: [quotes, news, full, quick, events]
         default: news
       markets:
         description: "Comma-separated: IN,US"
         default: "IN,US"
+      symbols:
+        description: "quick/events only: comma-separated tickers (blank = watchlist)"
+        default: ""
+      request_id:
+        description: "Set by the dashboard to track its run"
+        default: ""
 
 concurrency:
   group: market-pipeline
@@ -44,19 +56,30 @@ jobs:
 
       - name: Pick mode
         id: mode
+        # Inputs arrive via env, never interpolated into the script, so a crafted
+        # value cannot inject shell. They are whitelisted again in Python.
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          IN_MODE: ${{ inputs.mode }}
+          IN_MARKETS: ${{ inputs.markets }}
+          IN_SYMBOLS: ${{ inputs.symbols }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "mode=${{ inputs.mode }}"       >> "$GITHUB_OUTPUT"
-            echo "markets=${{ inputs.markets }}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            case "$IN_MODE" in quotes|news|full|quick|events) ;; *) IN_MODE=news ;; esac
+            echo "mode=$IN_MODE" >> "$GITHUB_OUTPUT"
+            echo "markets=$(printf '%s' "$IN_MARKETS" | tr -cd 'A-Z,')" >> "$GITHUB_OUTPUT"
+            echo "symbols=$(printf '%s' "$IN_SYMBOLS" | tr -cd 'A-Za-z0-9.,&^=-')" >> "$GITHUB_OUTPUT"
           else
             # The two post-close crons do the expensive work; the rest stay cheap.
-            case "${{ github.event.schedule }}" in
+            case "$SCHEDULE" in
               "45 10 * * 1-5") echo "mode=full" >> "$GITHUB_OUTPUT" ;;
               "30 21 * * 1-5") echo "mode=full" >> "$GITHUB_OUTPUT" ;;
               "0 7 * * 6")     echo "mode=full" >> "$GITHUB_OUTPUT" ;;
               *)               echo "mode=quotes" >> "$GITHUB_OUTPUT" ;;
             esac
             echo "markets=IN,US" >> "$GITHUB_OUTPUT"
+            echo "symbols=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run pipeline
@@ -84,9 +107,14 @@ jobs:
           ALERT_RSI_HIGH:       ${{ vars.ALERT_RSI_HIGH }}
           ALERT_RSI_LOW:        ${{ vars.ALERT_RSI_LOW }}
           ALERT_COOLDOWN_HOURS: ${{ vars.ALERT_COOLDOWN_HOURS }}
-        run: python run_all.py --mode "${{ steps.mode.outputs.mode }}" --markets "${{ steps.mode.outputs.markets }}"
+          RUN_MODE:    ${{ steps.mode.outputs.mode }}
+          RUN_MARKETS: ${{ steps.mode.outputs.markets }}
+          RUN_SYMBOLS: ${{ steps.mode.outputs.symbols }}
+        run: python run_all.py --mode "$RUN_MODE" --markets "$RUN_MARKETS" --symbols="$RUN_SYMBOLS"
 
       - name: Commit data
+        env:
+          RUN_MODE: ${{ steps.mode.outputs.mode }}
         run: |
           git config user.name  "market-pipeline[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -95,7 +123,7 @@ jobs:
             echo "No data changes."
             exit 0
           fi
-          git commit -m "data: ${{ steps.mode.outputs.mode }} refresh $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git commit -m "data: $RUN_MODE refresh $(date -u +'%Y-%m-%d %H:%M UTC')"
           # The dashboard may have committed a watchlist change while we ran.
           for i in 1 2 3; do
             git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push && exit 0

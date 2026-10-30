@@ -2,7 +2,7 @@
 
 import { divergingColor, divergingLegend, hbars, lineChart, withTip } from './charts.js';
 import {
-  ago, card, changePill, display, el, fmt, lsGet, lsSet, pct, pill, sign, stat, table,
+  ago, card, changePill, display, el, fmt, lsGet, lsSet, pct, sign, table,
 } from './lib.js';
 
 const SEEN_KEY = 'mktdesk.lastSeen';
@@ -151,84 +151,157 @@ function renderSectorPanel(ctx, name, stories) {
 }
 
 // ============================================================== news feed
+// Filters live outside the render so they survive background reloads.
+const feedViews = {};
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const COMPANY_SUFFIX = /\b(limited|ltd\.?|inc\.?|corp(oration)?\.?|co\.?|plc|holdings?|the)\b/gi;
+
+/** The accumulating feed plus per-ticker and per-sector buckets, newest first. */
+function allStories(ctx) {
+  const seen = new Map();
+  const add = (s) => {
+    const key = s?.id ?? s?.link ?? s?.title;
+    if (key && !seen.has(key)) seen.set(key, s);
+  };
+  (ctx.feed?.items ?? []).forEach(add);
+  Object.values(ctx.bundle.news_by_symbol ?? {}).flat().forEach(add);
+  Object.values(ctx.bundle.sector_news ?? {}).flat().forEach(add);
+  (ctx.bundle.market_news ?? []).forEach(add);
+  return [...seen.values()].sort((a, b) => String(b.published ?? '').localeCompare(String(a.published ?? '')));
+}
+
 export function newsFeed(ctx) {
-  const items = ctx.feed?.items ?? [];
-  if (!items.length) {
-    return card('News feed', null,
-      el('div', { class: 'empty' },
-        'No feed yet. It is written by the pipeline in news or full mode.'));
-  }
+  const items = allStories(ctx);
+  const st = (feedViews[ctx.market] ??= {
+    scope: ctx.watchSymbols.length ? 'watchlist' : 'all',
+    tickers: '', q: '', kind: 'news', tone: '', sector: '', onlyNew: false,
+  });
 
   // "New since last visit" uses OUR first_seen, not the outlet's timestamp,
   // so a backdated story still registers as new to you.
-  const lastSeen = lsGet(`${SEEN_KEY}.${ctx.bundle.market}`, null);
-  const newCount = lastSeen
-    ? items.filter((i) => (i.first_seen ?? '') > lastSeen).length
-    : 0;
+  const lastSeen = lsGet(`${SEEN_KEY}.${ctx.market}`, null);
+  const newCount = lastSeen ? items.filter((i) => (i.first_seen ?? '') > lastSeen).length : 0;
 
-  const state = { q: '', sector: '', event: '', kind: '', tone: '', onlyNew: false };
+  const base = (s) => String(s ?? '').replace(/\.(NS|BO)$/, '').toUpperCase();
+  const watchBases = new Set(ctx.watchSymbols.map(base));
+  const names = Object.fromEntries((ctx.bundle.quotes ?? []).map((q) => [base(q.symbol),
+    String(q.name ?? '').replace(COMPANY_SUFFIX, '').replace(/\s+/g, ' ').trim().toLowerCase()]));
+
+  const isWatched = (i) => watchBases.has(base(i.symbol)) || (i.tickers ?? []).some((t) => watchBases.has(base(t)));
+  const mentions = (i, term) => {
+    const b = base(term);
+    if (base(i.symbol) === b || (i.tickers ?? []).some((t) => base(t) === b)) return true;
+    if (new RegExp(`(^|[^A-Za-z0-9])${escapeRe(b)}($|[^A-Za-z0-9])`, 'i').test(i.title ?? '')) return true;
+    const name = names[b];
+    return Boolean(name && name.length > 3 && (i.title ?? '').toLowerCase().includes(name));
+  };
+
   const list = el('div');
-
-  const sectorsPresent = [...new Set(items.map((i) => i.sector).filter(Boolean))].sort();
-  const eventsPresent = [...new Set(items.map((i) => i.event_type).filter(Boolean))].sort();
+  const note = el('div');
+  const sectorRow = el('div', { class: 'chips sector-chips' });
 
   function draw() {
+    const terms = st.tickers.split(/[,\s]+/).map((t) => t.trim()).filter(Boolean);
+    const q = st.q.toLowerCase();
+    sectorRow.classList.toggle('hidden', st.scope !== 'sectors' || terms.length > 0);
+
     const filtered = items.filter((i) => {
-      if (state.onlyNew && lastSeen && (i.first_seen ?? '') <= lastSeen) return false;
-      if (state.sector && i.sector !== state.sector) return false;
-      if (state.event && i.event_type !== state.event) return false;
-      if (state.kind && (i.kind ?? 'news') !== state.kind) return false;
-      if (state.tone === 'bull' && !(i.sentiment > 0.1)) return false;
-      if (state.tone === 'bear' && !(i.sentiment < -0.1)) return false;
-      if (state.q) {
-        const hay = `${i.title} ${i.source} ${(i.tickers ?? []).join(' ')}`.toLowerCase();
-        if (!hay.includes(state.q.toLowerCase())) return false;
+      if (terms.length) { if (!terms.some((t) => mentions(i, t))) return false; }
+      else if (st.scope === 'watchlist' && !isWatched(i)) return false;
+      else if (st.scope === 'sectors') {
+        if (!i.sector || i.sector === 'Market-wide') return false;
+        if (st.sector && i.sector !== st.sector) return false;
       }
+      const kind = i.kind ?? 'news';
+      if (st.kind === 'news' && kind !== 'news') return false;
+      if (st.kind === 'filings' && kind === 'news') return false;
+      if (st.tone === 'bull' && !(i.sentiment > 0.1)) return false;
+      if (st.tone === 'bear' && !(i.sentiment < -0.1)) return false;
+      if (st.onlyNew && lastSeen && (i.first_seen ?? '') <= lastSeen) return false;
+      if (q && !`${i.title} ${i.source} ${(i.tickers ?? []).join(' ')}`.toLowerCase().includes(q)) return false;
       return true;
     });
+
+    // Tickers with nothing in the window: offer to fetch them on demand.
+    const missing = terms.filter((t) => !items.some((i) => mentions(i, t)));
+    note.replaceChildren(...(missing.length ? [el('div', { class: 'banner' },
+      `No stories mention ${missing.map((t) => t.toUpperCase()).join(', ')} in the current window. `,
+      ctx.connected
+        ? el('button', { class: 'btn sm', id: 'fetchNews', onclick: () => ctx.fetchSymbols(missing, 'news') },
+            `Fetch news for ${missing.map((t) => t.toUpperCase()).join(', ')}`)
+        : 'Connect GitHub (⚙) to fetch news for any ticker on demand.')] : []));
+
+    let empty = 'Nothing matches those filters.';
+    if (!terms.length && st.scope === 'watchlist') {
+      empty = ctx.watchSymbols.length
+        ? 'No recent stories for your watchlist. Try "All" or check back after the next update.'
+        : 'Your watchlist is empty. Add tickers on the Watchlist tab, or type tickers above.';
+    }
     list.replaceChildren(
       el('div', { class: 'faint', style: 'font-size:11.5px;margin-bottom:10px' },
         `${filtered.length} of ${items.length} stories`),
       ...(filtered.length
         ? filtered.slice(0, 250).map((i) => newsRow(i, ctx, lastSeen))
-        : [el('div', { class: 'empty' }, 'Nothing matches those filters.')]));
+        : [el('div', { class: 'empty' }, empty)]));
   }
 
-  const select = (label, key, options) => el('select', {
-    'aria-label': label,
-    onchange: (e) => { state[key] = e.target.value; draw(); },
-  }, el('option', { value: '' }, label),
-     ...options.map((o) => el('option', { value: o }, String(o).replace(/_/g, ' '))));
+  const seg = el('div', { class: 'seg', role: 'tablist' },
+    ...[['watchlist', 'Watchlist'], ['sectors', 'Sectors'], ['all', 'All']].map(([id, label]) =>
+      el('button', {
+        class: st.scope === id ? 'active' : '', 'data-scope': id,
+        onclick: (e) => {
+          st.scope = id;
+          [...seg.children].forEach((b) => b.classList.toggle('active', b === e.currentTarget));
+          draw();
+        },
+      }, label)));
 
-  const search = el('input', {
-    type: 'search', placeholder: 'Search headlines, sources, tickers…',
-    style: 'flex:1;min-width:190px',
-    oninput: (e) => { state.q = e.target.value; draw(); },
-  });
+  sectorRow.append(...(ctx.bundle.sectors ?? []).map((s) => {
+    const tone = s.sentiment ?? 0;
+    return el('button', {
+      class: `chip-toggle${st.sector === s.sector ? ' on' : ''}`,
+      title: `${s.story_count ?? 0} stories · tone ${fmt(tone, 2)}`,
+      onclick: (e) => {
+        st.sector = st.sector === s.sector ? '' : s.sector;
+        [...sectorRow.children].forEach((b) => b.classList.toggle('on', b === e.currentTarget && st.sector));
+        draw();
+      },
+    }, s.sector, el('span', { class: `num ${tone > 0.1 ? 'up' : tone < -0.1 ? 'down' : 'faint'}` },
+      ` ${tone >= 0 ? '+' : ''}${fmt(tone, 2)}`));
+  }));
+
+  const select = (label, key, options) => el('select', {
+    'aria-label': label, 'data-filter': key,
+    onchange: (e) => { st[key] = e.target.value; draw(); },
+  }, ...options.map(([value, text]) => el('option', { value, selected: st[key] === value }, text)));
 
   const frag = el('div');
-
-  frag.append(card(
-    'Live news feed',
-    `${items.length} stories held · adds on each refresh, never replaces`,
+  frag.append(card('News', `${items.length} stories · last ${ctx.meta?.news_window_days ?? 7} days`,
     newCount
-      ? el('div', { class: 'banner' },
-          el('b', {}, `${newCount} new `),
-          `since you last opened this tab (${ago(lastSeen)}). `,
-          'Marked with a dot on the left.')
+      ? el('div', { class: 'faint', style: 'font-size:12px;margin-bottom:10px' },
+          el('b', {}, `${newCount} new`), ` since you last looked (${ago(lastSeen)}), marked with a dot.`)
       : null,
     el('div', { class: 'feed-controls' },
-      search,
-      select('All sectors', 'sector', sectorsPresent),
-      select('All events', 'event', eventsPresent),
-      select('All types', 'kind', ['news', 'filing', 'disclosure']),
-      select('Any tone', 'tone', ['bull', 'bear']),
+      seg,
+      el('input', {
+        type: 'search', id: 'newsTickers', value: st.tickers,
+        placeholder: 'Tickers, e.g. INFY, HDFCBANK', style: 'min-width:200px',
+        oninput: (e) => { st.tickers = e.target.value; draw(); },
+      }),
+      el('input', {
+        type: 'search', id: 'newsSearch', value: st.q, placeholder: 'Search headlines…',
+        style: 'flex:1;min-width:160px',
+        oninput: (e) => { st.q = e.target.value; draw(); },
+      }),
+      select('Type', 'kind', [['news', 'News'], ['filings', 'Filings'], ['', 'News + filings']]),
+      select('Tone', 'tone', [['', 'Any tone'], ['bull', 'Positive'], ['bear', 'Negative']]),
       lastSeen
         ? el('button', {
-            class: 'btn sm',
+            class: `btn sm${st.onlyNew ? ' primary' : ''}`,
             onclick: (e) => {
-              state.onlyNew = !state.onlyNew;
-              e.target.classList.toggle('primary', state.onlyNew);
+              st.onlyNew = !st.onlyNew;
+              e.currentTarget.classList.toggle('primary', st.onlyNew);
               draw();
             },
           }, 'New only')
@@ -236,10 +309,12 @@ export function newsFeed(ctx) {
       el('button', {
         class: 'btn sm',
         onclick: () => {
-          lsSet(`${SEEN_KEY}.${ctx.bundle.market}`, new Date().toISOString());
+          lsSet(`${SEEN_KEY}.${ctx.market}`, new Date().toISOString());
           ctx.rerender();
         },
       }, 'Mark all read')),
+    sectorRow,
+    note,
     list));
 
   draw();

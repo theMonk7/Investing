@@ -2,8 +2,13 @@
 
 Run modes (chosen by the GitHub Actions schedule that invokes it):
   --mode quotes  : prices + technicals + alerts        (frequent, cheap)
-  --mode news    : quotes + news + sentiment + teaching
+  --mode news    : quotes + news + sentiment + teaching + corporate calendar
   --mode full    : everything, retrains the model      (daily)
+  --mode quick   : just the --symbols given (or the watchlist): prices, news,
+                   events, charts, merged into the existing bundle. This is
+                   what the dashboard dispatches when you add a ticker.
+  --mode events  : corporate calendar only. Handy locally, where NSE answers
+                   even when it refuses cloud runners.
 
 Everything is written to data/ as JSON. The static dashboard reads only those
 files, so the site works with no backend at all.
@@ -12,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import traceback
@@ -22,6 +28,7 @@ import pandas as pd
 
 import alerts as alerts_mod
 import config
+import corporate_events
 import disclosures
 import events as events_mod
 import fetch_news
@@ -51,6 +58,55 @@ def write_json(path: Path, payload) -> None:
 
 def quote_asof(df) -> str:
     return df.index[-1].strftime("%Y-%m-%d")
+
+
+def utc_stamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def chart_file(sym: str) -> str:
+    return f"{sym.replace('/', '_')}.json"
+
+
+def write_charts(market: str, histories: dict, watched: set[str]) -> set[str]:
+    """Write charts for watched symbols we have history for; drop unwatched."""
+    chart_dir = DATA_DIR / market / "charts"
+    written = set()
+    for sym in watched & set(histories):
+        write_json(chart_dir / chart_file(sym), fetch_prices.ohlc_series(histories[sym]))
+        written.add(sym)
+    keep = {chart_file(s) for s in watched}
+    if chart_dir.exists():
+        for stale in chart_dir.glob("*.json"):
+            if stale.name not in keep:
+                stale.unlink()
+    return written
+
+
+def write_feed(cx, market: str) -> list[dict]:
+    # The accumulating feed is read back from SQLite, so it holds everything
+    # we have ever seen for this market -- not just what this run fetched.
+    # Newest-first by when WE first saw it, so a refresh adds rather than replaces.
+    feed = recent_news(cx, market, limit=400)
+    write_json(DATA_DIR / market / "feed.json", {
+        "market": market, "generated_at": utc_stamp(),
+        "count": len(feed), "items": feed,
+    })
+    return feed
+
+
+def refresh_events(cx, market: str, symbols: list[str] | None, tracked: list[str],
+                   names: dict) -> None:
+    """Calendar refresh never fails a run: a dead source just shows in the UI."""
+    try:
+        if symbols:
+            corporate_events.refresh_symbols(cx, market, symbols, names)
+        else:
+            corporate_events.refresh(cx, market, tracked, names)
+        out = corporate_events.export(cx, market, DATA_DIR / market / "events.json")
+        print(f"[{market}] calendar: {len(out['items'])} events")
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
 
 
 def run_market(cx, market: str, mode: str, model, metrics: dict) -> dict:
@@ -148,6 +204,7 @@ def run_market(cx, market: str, mode: str, model, metrics: dict) -> dict:
                      + [i for v in news_by_symbol.values() for i in v])
         logged = reactions.log_from_news(cx, all_items, market)
         print(f"[{market}] logged {logged} classified events")
+        refresh_events(cx, market, None, sorted(watched), names)
     else:
         sentiments = get_meta(cx, f"sentiments:{market}", {})
         market_sent = get_meta(cx, f"market_sent:{market}", market_sent)
@@ -209,21 +266,8 @@ def run_market(cx, market: str, mode: str, model, metrics: dict) -> dict:
     delivery = alerts_mod.dispatch(cx, pending)
 
     # ---- charts -----------------------------------------------------------
-    chart_dir = DATA_DIR / market / "charts"
-    keep = set()
-    for sym in watched:
-        if sym in histories:
-            name = f"{sym.replace('/', '_')}.json"
-            keep.add(name)
-            write_json(chart_dir / name, fetch_prices.ohlc_series(histories[sym]))
-    # Drop charts for symbols the user has since unwatched.
-    if chart_dir.exists():
-        for stale in chart_dir.glob("*.json"):
-            if stale.name not in keep:
-                stale.unlink()
+    charted = write_charts(market, histories, watched)
 
-    # The accumulating feed is read back from SQLite, so it holds everything
-    # we have ever seen for this market -- not just what this run fetched.
     feed = recent_news(cx, market, limit=400)
 
     # --- sector rollup, persisted so the charts have real history ---------
@@ -262,13 +306,7 @@ def run_market(cx, market: str, mode: str, model, metrics: dict) -> dict:
     event_stats = reactions.summarise(cx, market)
     catalyst_rows = reactions.catalysts(cx, market, quotes_by_symbol)
 
-    # Newest-first by when WE first saw it, so a refresh adds rather than replaces.
-    write_json(DATA_DIR / market / "feed.json", {
-        "market": market,
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "count": len(feed),
-        "items": feed,
-    })
+    write_feed(cx, market)
 
     recent_alerts = [dict(r) for r in cx.execute(
         "SELECT ts,symbol,kind,severity,title,body FROM alerts "
@@ -300,7 +338,7 @@ def run_market(cx, market: str, mode: str, model, metrics: dict) -> dict:
         "feed_count": len(feed),
         "lessons": lessons[:24],
         "alerts": recent_alerts,
-        "charts_available": sorted(watched & set(histories)),
+        "charts_available": sorted(charted),
     }
     write_json(DATA_DIR / market / "bundle.json", bundle)
 
@@ -310,6 +348,120 @@ def run_market(cx, market: str, mode: str, model, metrics: dict) -> dict:
           f"{delivery['sent']} alerts via {delivery['channels'] or 'none'}")
     return {"market": market, "quotes": len(quotes), "alerts": delivery,
             "elapsed_s": elapsed}
+
+
+def run_quick(cx, market: str, symbols: list[str], model, metrics: dict) -> dict:
+    """Targeted refresh merged into the existing bundle.
+
+    Used when the dashboard adds a ticker or asks for news on one: fetches only
+    the given symbols (default: the watchlist) so the round trip stays short.
+    Market-wide pieces (regime, sectors, movers, lessons) are left as they are
+    until the next scheduled run.
+    """
+    t0 = time.time()
+    bundle_path = DATA_DIR / market / "bundle.json"
+    if not bundle_path.exists():
+        return run_market(cx, market, "news", model, metrics)
+    bundle = json.loads(bundle_path.read_text())
+
+    watched = set(load_watchlist().get(market, []))
+    universe = set(universe_for(market))
+    targets = symbols or sorted(watched)
+    print(f"[{market}] quick: {', '.join(targets) or 'nothing to do'}")
+
+    names = get_meta(cx, f"names:{market}", {})
+    missing = [s for s in targets if s not in names]
+    if missing:
+        names.update(fetch_prices.fetch_names(missing))
+        set_meta(cx, f"names:{market}", names)
+
+    histories = fetch_prices.download_history(targets) if targets else {}
+    bench_df = fetch_prices.history(BENCHMARK[market], period="2y")
+    bench_close = bench_df["close"] if not bench_df.empty else None
+
+    matcher = events_mod.build_matcher(sorted(universe | set(targets)), names)
+    sentiments = get_meta(cx, f"sentiments:{market}", {})
+    news_cache = get_meta(cx, f"news_cache:{market}", {})
+    for sym in targets:
+        items = fetch_news.symbol_news(sym, market, names.get(sym, ""), days=NEWS_WINDOW_DAYS)
+        if not items:
+            continue
+        sentiment_mod.score_items(items, use_llm=False)
+        events_mod.enrich(items, matcher, market, use_llm=False)
+        save_news(cx, items)
+        if sym in watched:
+            news_cache[sym] = items[:12]
+            sentiments[sym] = sentiment_mod.aggregate(items)
+        time.sleep(0.3)
+    news_cache = {k: v for k, v in news_cache.items() if k in watched}
+    set_meta(cx, f"news_cache:{market}", news_cache)
+    set_meta(cx, f"sentiments:{market}", sentiments)
+
+    quotes = {q["symbol"]: q for q in bundle.get("quotes", []) if q["symbol"] in universe}
+    predictions = {k: v for k, v in (bundle.get("predictions") or {}).items() if k in universe}
+    for sym, df in histories.items():
+        q = fetch_prices.quote_from(sym, df, {"name": names.get(sym, sym)})
+        if not q:
+            continue
+        q["sector"] = sector_of(sym)
+        save_quote(cx, sym, market, q)
+        upsert_prices(cx, sym, [
+            (d.strftime("%Y-%m-%d"), float(r.open), float(r.high),
+             float(r.low), float(r.close), float(r.volume))
+            for d, r in df.tail(60).iterrows()
+        ])
+        if sym not in universe:
+            continue          # a one-off news lookup, not something we track
+        quotes[sym] = q
+        pred = predict_mod.predict_symbol(
+            model, metrics, sym, df, bench_close,
+            sentiments.get(sym, {"score": 0, "count": 0, "label": "neutral"}))
+        if pred:
+            predictions[sym] = pred
+    for q in quotes.values():
+        q["watched"] = q["symbol"] in watched
+
+    refresh_events(cx, market, targets, sorted(watched), names)
+
+    charted = write_charts(market, histories, watched)
+    charts = (set(bundle.get("charts_available") or []) | charted) & watched
+    feed = write_feed(cx, market)
+
+    bundle.update({
+        "generated_at": utc_stamp(),
+        "quotes": sorted(quotes.values(), key=lambda q: -abs(q.get("change_pct") or 0)),
+        "watchlist": sorted(watched),
+        "predictions": predictions,
+        "news_by_symbol": {k: v[:8] for k, v in news_cache.items()},
+        "feed_count": len(feed),
+        "charts_available": sorted(charts),
+    })
+    write_json(bundle_path, bundle)
+    elapsed = round(time.time() - t0, 1)
+    print(f"[{market}] quick done in {elapsed}s — {len(histories)} priced")
+    return {"market": market, "quick": targets, "elapsed_s": elapsed}
+
+
+def run_events(cx, market: str, symbols: list[str]) -> dict:
+    watched = sorted(load_watchlist().get(market, []))
+    names = get_meta(cx, f"names:{market}", {})
+    refresh_events(cx, market, symbols or None, watched, names)
+    return {"market": market, "events": True}
+
+
+SYMBOL_RE = re.compile(r"^[A-Z0-9^][A-Z0-9.&=-]{0,19}$")
+
+
+def parse_symbols(raw: str) -> dict[str, list[str]]:
+    """Split a comma list into markets; anything odd is dropped, not executed."""
+    out: dict[str, list[str]] = {m: [] for m in MARKETS}
+    for token in re.split(r"[\s,]+", (raw or "").upper()):
+        if not SYMBOL_RE.match(token):
+            continue
+        market = "IN" if token.endswith((".NS", ".BO")) else "US"
+        if token not in out[market]:
+            out[market].append(token)
+    return out
 
 
 def train_model(cx):
@@ -350,16 +502,23 @@ def load_model(cx):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=("quotes", "news", "full"), default="full")
+    ap.add_argument("--mode", choices=("quotes", "news", "full", "quick", "events"),
+                    default="full")
     ap.add_argument("--markets", default="IN,US")
+    ap.add_argument("--symbols", default="",
+                    help="comma list for quick/events; .NS/.BO go to IN, the rest to US")
     args = ap.parse_args()
 
     targets = [m for m in args.markets.split(",") if m in MARKETS]
+    by_market = parse_symbols(args.symbols)
+    if args.symbols.strip():
+        targets = [m for m in MARKETS if by_market[m]]
     results, failures = [], []
+    targeted = args.mode in ("quick", "events")
 
     with conn() as cx:
         model, metrics = load_model(cx)
-        if args.mode == "full" or model is None:
+        if args.mode == "full" or (model is None and not targeted):
             try:
                 model, metrics = train_model(cx)
             except Exception:  # noqa: BLE001
@@ -368,13 +527,24 @@ def main() -> int:
 
         for market in targets:
             try:
-                results.append(run_market(cx, market, args.mode, model, metrics))
+                if args.mode == "quick":
+                    results.append(run_quick(cx, market, by_market[market], model, metrics))
+                elif args.mode == "events":
+                    results.append(run_events(cx, market, by_market[market]))
+                else:
+                    results.append(run_market(cx, market, args.mode, model, metrics))
             except Exception:  # noqa: BLE001 - one market must not kill the other
                 traceback.print_exc()
                 failures.append(market)
 
-        prune(cx)
+        if not targeted:
+            prune(cx)
         set_meta(cx, "last_run", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+    if targeted:
+        # Market-wide artefacts (scorecard, meta) belong to the scheduled runs.
+        print(f"[done] {args.mode} failures={failures or 'none'}")
+        return 1 if targets and failures == targets else 0
 
     try:
         card = scorecard.grade()
