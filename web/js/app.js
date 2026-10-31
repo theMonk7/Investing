@@ -1,6 +1,7 @@
 // Bootstrap, state, routing, data loading, on-demand updates, settings.
 
 import * as calendar from './calendar.js';
+import { openEvent } from './event-detail.js';
 import * as gh from './gh.js';
 import { pageHead } from './guides.js';
 import * as learn from './learn.js';
@@ -74,6 +75,7 @@ const state = {
   bundles: {},
   feeds: {},
   events: {},
+  fundamentals: {},
   meta: null,
   curriculum: [],
   scorecard: null,
@@ -114,14 +116,15 @@ async function loadAll() {
     get('meta.json'),
     get('scorecard.json'),
     state.curriculum.length ? state.curriculum : pagesJSON('curriculum.json').catch(() => []),
-    ...['IN', 'US'].flatMap((m) =>
-      [get(`${m}/bundle.json`), get(`${m}/feed.json`), get(`${m}/events.json`)]),
+    ...['IN', 'US'].flatMap((m) => [get(`${m}/bundle.json`), get(`${m}/feed.json`),
+      get(`${m}/events.json`), get(`${m}/fundamentals.json`)]),
   ]);
   Object.assign(state, { meta, scorecard, curriculum: curriculum ?? [] });
   ['IN', 'US'].forEach((m, i) => {
-    state.bundles[m] = perMarket[i * 3];
-    state.feeds[m] = perMarket[i * 3 + 1];
-    state.events[m] = perMarket[i * 3 + 2];
+    state.bundles[m] = perMarket[i * 4];
+    state.feeds[m] = perMarket[i * 4 + 1];
+    state.events[m] = perMarket[i * 4 + 2];
+    state.fundamentals[m] = perMarket[i * 4 + 3];
   });
   state.source = repo ? 'repo' : 'pages';
   await loadWatchlist(repo);
@@ -375,6 +378,7 @@ function context() {
     bundle: state.bundles[m],
     feed: state.feeds[m],
     events: state.events[m],
+    fundamentals: state.fundamentals[m],
     meta: state.meta,
     curriculum: state.curriculum,
     scorecard: state.scorecard,
@@ -392,6 +396,7 @@ function context() {
     rerender: render,
     go: navigate,
     openStock: (sym) => views.stockDetail(context(), sym),
+    openEvent: (e) => openEvent(context(), e),
   };
 }
 
@@ -438,7 +443,42 @@ function render() {
 // ---------------------------------------------------------------- sync chip
 let chipTimer = null;
 
+/** Who is signed in, as a coloured dot: green ready, amber limited, grey read-only. */
+function updateAccount() {
+  const btn = $('#acctBtn');
+  if (!btn) return;
+  const a = gh.configured() ? gh.lastAccess() : null;
+  let kind, text, title;
+  if (local.available()) {
+    [kind, text, title] = ['ok', 'Local', 'Local mode: saves and updates run on this machine. No sign-in needed.'];
+  } else if (!gh.configured()) {
+    [kind, text, title] = ['off', 'Sign in', 'Read-only. Connect GitHub to save your watchlist and fetch data on demand.'];
+  } else if (!a) {
+    [kind, text, title] = ['pending', 'Connected', `Token saved for ${gh.settings().owner}/${gh.settings().repo}. Checking access…`];
+  } else if (!a.valid) {
+    [kind, text, title] = ['bad', 'Token rejected', 'GitHub rejected the saved token. Click to fix.'];
+  } else if (a.contents === false || a.actions === false || a.repoFound === false) {
+    [kind, text, title] = ['warn', a.login, `Signed in as ${a.login}, but this token cannot `
+      + `${a.contents === false ? 'save the watchlist' : 'start updates'} on ${a.repo}. Click to fix.`];
+  } else {
+    [kind, text, title] = ['ok', a.login, `Signed in to GitHub as ${a.login} · can save and update ${a.repo}.`];
+  }
+  btn.className = `acct ${kind}`;
+  btn.replaceChildren(el('span', { class: 'acct-dot' }), el('span', { class: 'acct-name' }, text));
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+}
+
+/** Learn the GitHub login (and what the token may do) once a day, quietly. */
+function refreshAccount() {
+  if (local.available() || !gh.configured()) return;
+  const a = gh.lastAccess();
+  if (a && Date.now() - Date.parse(a.at) < 86400e3) return;
+  gh.checkAccess().then(updateChip).catch(() => {});
+}
+
 function updateChip() {
+  updateAccount();
   const chip = $('#syncChip');
   const job = sync.current();
   const stamp = state.bundles[state.market]?.generated_at ?? state.meta?.generated_at;
@@ -598,7 +638,9 @@ function openSettings({ check = false } = {}) {
   const branch = el('input', { type: 'text', value: s.branch || 'main', style: 'max-width:140px' });
   const token = el('input', { type: 'password', value: s.token || '', placeholder: 'github_pat_...' });
   const status = el('div', { class: 'faint', style: 'font-size:12px;min-height:18px;margin-bottom:12px' },
-    gh.configured() ? `Connected to ${s.owner}/${s.repo}.` : 'Not connected: the dashboard is read-only.');
+    gh.configured()
+      ? `${gh.lastAccess()?.login ? `Signed in as ${gh.lastAccess().login} · ` : ''}Connected to ${s.owner}/${s.repo}.`
+      : 'Not connected: the dashboard is read-only.');
 
   const field = (label, input, hint) => el('div', { style: 'margin-bottom:14px' },
     el('label', { style: 'display:block;font-size:12px;font-weight:650;margin-bottom:5px' }, label),
@@ -796,6 +838,7 @@ function wire() {
   });
 
   $('#settingsBtn').addEventListener('click', openSettings);
+  $('#acctBtn').addEventListener('click', () => openSettings({ check: gh.configured() && !local.available() }));
   $('#refreshBtn').addEventListener('click', () => toggleRefreshMenu());
   $('#syncChip').addEventListener('click', onChipClick);
 
@@ -839,6 +882,7 @@ function wire() {
     return;
   }
   render();
+  refreshAccount();
   // A run that ended before this page load was already reported.
   if (!sync.busy()) lastReported = sync.current()?.requestId ?? null;
   sync.subscribe(onSyncChange);

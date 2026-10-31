@@ -28,7 +28,7 @@ specifically.
 |---|---|
 | Your tickers: price, 5D/1M, RSI, news count + tone, next corporate event; add/remove, **Update now** | Watchlist |
 | News for your tickers, any typed ticker, sectors, or everything; filters + search | News |
-| Board meetings, results, dividends, splits, buybacks, AGMs in a chosen window, for your watchlist, all companies, or typed tickers | Calendar |
+| Board meetings, results, dividends, splits, buybacks, AGMs in a chosen window, for your watchlist, all companies, or typed tickers; click an event for quarterly results, EPS surprises, usual price reaction, news tone, analyst targets and which way the evidence leans | Calendar |
 | Regime, breadth, daily brief, gainers/losers, sector rotation | Market |
 | Screener with the exact conditions behind every score | More → Ideas |
 | Relative-strength probability, per-feature attribution, holdout AUC, live scorecard | More → Model |
@@ -57,6 +57,35 @@ events.
 
 If NSE blocks the Actions runner, run `python run_all.py --mode events`
 locally and commit `data/IN/events.json`.
+
+### Event details — results, expectations and the lean
+
+Click any calendar row (or **Details**) for a panel that explains the event
+and, for results, puts the numbers in context:
+
+| Section | What it shows | Source |
+|---|---|---|
+| How the company did | Last 5 quarters: revenue, operating margin, net profit, EPS; YoY and QoQ growth and a one-line verdict | Yahoo quarterly income statement |
+| What the market expects | Next EPS estimate, implied growth, beat record, and per report: estimate, actual, surprise, day move, 5-day move | Yahoo earnings dates; moves measured from our own daily closes |
+| What happened (past results) | Surprise and the price reaction, and whether the price followed the headline | same |
+| How the stock usually reacts | Median results-day move, vs. its normal daily range (ATR), and behaviour after beats and misses | same |
+| Going into it | Trend, 1-month return, RSI, distance from the 52-week high, news tone, market regime | bundle.json, feed.json |
+| Which way might it go? (upcoming only) | Counted rules for and against, and the size of move to plan for | all of the above |
+| Analysts & valuation | Rating, average/low/high target vs. price, P/E, margin, ROE, D/E, yield | Yahoo |
+
+The lean is a tally of visible rules, not a forecast. Results data is
+collected for the watchlist plus companies with results in the next 3 weeks
+(`pipeline/fundamentals.py`, cached in SQLite, ≤ 25 Yahoo fetches per run,
+refreshed every 4 h around a results date). Rows show a *beat / miss* or
+*±x% usual* tag when data exists. Yahoo occasionally copies one quarter's
+figures into another; identical quarters are dropped rather than shown.
+
+### Signed-in indicator
+
+The pill next to ⚙ shows who the dashboard acts as: green with your GitHub
+login when the token can save and start updates, amber when it is missing a
+permission, red when GitHub rejects it, *Local* in local mode, and *Sign in*
+when read-only. Click it to open Settings.
 
 ### "Real-time" updates
 
@@ -350,6 +379,7 @@ GitHub Actions (cron)
         ├─ technicals.py     RSI, MACD, ATR, Bollinger, OBV, 52w, breadth
         ├─ fetch_news.py     public RSS + Google News per ticker
         ├─ corporate_events.py  NSE filings, Nasdaq calendars, Yahoo estimates
+        ├─ fundamentals.py   quarterly results, EPS surprises, analyst targets
         ├─ sentiment.py      VADER + finance lexicon (+ optional LLM)
         ├─ predict.py        logistic regression, time-based holdout
         ├─ movers.py         regime, sector rotation, transparent screener

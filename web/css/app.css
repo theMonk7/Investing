@@ -148,6 +148,24 @@ button { font-family: inherit; cursor: pointer; }
 .sync-chip:hover { color: var(--text); }
 @keyframes pulse { 50% { opacity: .3; } }
 
+/* signed-in indicator */
+.acct {
+  display: inline-flex; align-items: center; gap: 7px; max-width: 170px;
+  border: 1px solid var(--border); background: var(--bg-elev-2); color: var(--text-dim);
+  border-radius: 20px; padding: 5px 11px 5px 9px; font-size: 12px; font-weight: 600; white-space: nowrap;
+}
+.acct:hover { color: var(--text); border-color: var(--border-strong); }
+.acct-name { overflow: hidden; text-overflow: ellipsis; }
+.acct-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--text-faint); }
+.acct.ok { color: var(--text); border-color: color-mix(in srgb, var(--up) 45%, transparent); }
+.acct.ok .acct-dot { background: var(--up); box-shadow: 0 0 0 3px var(--up-soft); }
+.acct.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.acct.warn .acct-dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+.acct.bad { color: var(--down); border-color: color-mix(in srgb, var(--down) 45%, transparent); }
+.acct.bad .acct-dot { background: var(--down); }
+.acct.pending .acct-dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.acct.off .acct-dot { background: transparent; border: 1.5px solid var(--text-faint); }
+
 .main { padding: 20px 24px 60px; max-width: 1400px; margin: 0 auto; overflow-x: hidden; }
 
 /* ------------------------------------------------------------------ cards */
@@ -596,6 +614,67 @@ input[type="date"] { background: var(--bg-elev-2); border: 1px solid var(--borde
 .g-learn { margin-top: 4px; }
 .g-foot { font-size: 11.5px; margin-top: 18px; }
 
+/* ----------------------------------------------------------- event detail */
+.drawer.wide { width: min(760px, 100%); }
+.ev-main { cursor: pointer; }
+.ev-main:hover .ev-title { color: var(--accent); }
+.ed-head { margin-bottom: 20px; }
+.ed-company { font-size: 18px; font-weight: 680; letter-spacing: -0.2px; }
+.ed-when { color: var(--text-dim); margin: 2px 0 8px; }
+.ed-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.ed-detail { margin: 0 0 10px; color: var(--text-dim); }
+.ed-actions { gap: 8px; flex-wrap: wrap; }
+.ed-sec { margin-bottom: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
+.ed-sec h4 { margin: 0 0 10px; font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text-faint); }
+.ed-sub { text-transform: none; letter-spacing: 0; font-weight: 500; margin-left: 8px; }
+.ed-sec p { margin: 0 0 8px; }
+.ed-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.ed-tile { background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 9px; padding: 9px 11px; }
+.ed-tile .k { font-size: 10.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .05em; }
+.ed-tile .v { font-size: 17px; font-weight: 680; margin-top: 2px; }
+.ed-tile .d { font-size: 11.5px; color: var(--text-dim); margin-top: 1px; }
+.ed-tile .v.up, .ed-table .up, .ed-analyst .up { color: var(--up); }
+.ed-tile .v.down, .ed-table .down, .ed-analyst .down { color: var(--down); }
+.ed-verdict { padding: 9px 12px; border-radius: 8px; background: var(--bg-elev-2); color: var(--text); }
+.ed-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 6px 0 8px; }
+.ed-table th { text-align: left; font-size: 10.5px; font-weight: 600; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: .04em; padding: 5px 6px; border-bottom: 1px solid var(--border); }
+.ed-table td { padding: 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.ed-table tr.hl td { background: var(--accent-soft); }
+.ed-bar-cell { width: 22%; }
+.ed-bar { display: block; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 60%, transparent); }
+.ed-note { font-size: 11.5px; color: var(--text-faint); line-height: 1.6; }
+.ed-list { margin: 0 0 8px; padding-left: 18px; color: var(--text-dim); }
+.ed-list li { margin-bottom: 5px; }
+.ed-news { list-style: none; margin: 0 0 8px; padding: 0; }
+.ed-news li { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.ed-news li .tag { flex: none; min-width: 42px; text-align: center; }
+.ed-news small { display: block; color: var(--text-faint); font-size: 11px; }
+.ed-analyst { margin-bottom: 12px; }
+.ed-range { position: relative; height: 6px; margin: 14px 0 22px; border-radius: 3px;
+  background: linear-gradient(90deg, var(--down-soft), var(--bg-elev-2), var(--up-soft)); border: 1px solid var(--border); }
+.ed-range i { position: absolute; top: -5px; width: 3px; height: 14px; border-radius: 2px; transform: translateX(-50%); }
+.ed-range-mean { background: var(--accent); }
+.ed-range-price { background: var(--text); }
+.ed-range span { position: absolute; top: 11px; font-size: 11px; color: var(--text-faint); }
+.ed-range .lo { left: 0; }
+.ed-range .hi { right: 0; }
+.ed-lean { padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-elev-2); margin-bottom: 10px; }
+.ed-lean.up { border-color: color-mix(in srgb, var(--up) 45%, transparent); background: var(--up-soft); }
+.ed-lean.down { border-color: color-mix(in srgb, var(--down) 45%, transparent); background: var(--down-soft); }
+.ed-lean-label { font-size: 16px; font-weight: 700; margin-bottom: 3px; }
+.ed-lean.up .ed-lean-label { color: var(--up); }
+.ed-lean.down .ed-lean-label { color: var(--down); }
+.ed-lean-size { margin-top: 6px; font-weight: 600; }
+.ed-factors { list-style: none; margin: 0 0 8px; padding: 0; }
+.ed-factors li { display: flex; gap: 9px; padding: 6px 0; border-bottom: 1px solid var(--border); color: var(--text-dim); }
+.ed-factors li b { color: var(--text); }
+.ed-factors .mark { flex: none; width: 16px; text-align: center; color: var(--text-faint); }
+.ed-factors li.up .mark { color: var(--up); }
+.ed-factors li.down .mark { color: var(--down); }
+.ed-foot { font-size: 11.5px; margin-top: 8px; }
+
 /* ------------------------------------------------------------------ learn */
 .today-concept { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .learn-stats { margin-bottom: 16px; }
@@ -655,4 +734,6 @@ input[type="date"] { background: var(--bg-elev-2); border: 1px solid var(--borde
   .menu-list { position: fixed; top: 56px; right: 10px; left: 10px; width: auto; }
   .drawer { width: 100%; }
   .c-title { font-size: 18px; }
+  .acct { padding: 7px; }
+  .acct-name { display: none; }
 }

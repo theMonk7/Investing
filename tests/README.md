@@ -15,6 +15,13 @@ overwrites an exchange-sourced row, export de-duplication of Yahoo estimates
 once an official date exists, and `run_all.parse_symbols` rejecting
 anything that isn't a ticker.
 
+Results data (`fundamentals.py`) with synthetic statements and prices:
+quarter extraction and YoY/QoQ maths, dropping Yahoo's duplicated quarters,
+the price-reaction window for after-close, pre-open and unknown-time
+announcements, surprise history merged with exchange dates, JSON-safe stats,
+and the refresh rules (watchlist only, forced symbols skip anything fetched
+in the last hour).
+
 ```bash
 python tests/test_pipeline_offline.py
 ```
@@ -36,7 +43,9 @@ python tests/test_config_env.py
 Loads the real dashboard in jsdom against the committed `data/` snapshots,
 clicks through every view in both markets, opens the stock and settings
 modals, adds and removes a watchlist ticker (including one with no data yet),
-exercises the calendar's window/scope/type/ticker filters and the news
+exercises the calendar's window/scope/type/ticker filters, opens the event
+detail panel for every calendar row in both markets (with and without
+results data), checks the signed-in indicator, the news
 ticker filter, opens the ⓘ guide drawer on every page (and its "Learn"
 links), answers a Learn quiz, marks a concept learned and advances to the
 next, checks the ⟳ menu items, and fails on any thrown error, empty view,

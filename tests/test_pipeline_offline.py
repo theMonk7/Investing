@@ -131,4 +131,58 @@ print("corporate events OK:", len(payload["items"]), "items exported")
 parsed = run_all.parse_symbols("infy.ns, AAPL  aapl;rm -rf / TCS.BO $(x) msft")
 assert parsed["IN"] == ["INFY.NS", "TCS.BO"] and parsed["US"] == ["AAPL", "MSFT"], parsed
 print("parse_symbols OK:", parsed)
+
+# --- fundamentals: statements, surprises, reactions, refresh ---------------
+import fundamentals as fu
+
+cols = pd.to_datetime(["2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30", "2025-06-30", "2025-03-31"])
+stmt = pd.DataFrame([[120.0, 110, 105, 100, 100, 105],
+                     [24.0, 20, 19, 18, 18, 19],
+                     [12.0, 11, 10, 9, 8, 10],
+                     [1.2, 1.1, 1.0, 0.9, 0.8, 1.0]],
+                    index=["Total Revenue", "Operating Income", "Net Income", "Diluted EPS"], columns=cols)
+qs = fu.quarters_from(stmt)
+periods = [x["period"] for x in qs]
+# 2025-12-31 and 2025-03-31 are identical copies (a real Yahoo glitch): both dropped.
+assert periods == ["2026-06-30", "2026-03-31", "2025-09-30", "2025-06-30"], periods
+assert qs[0]["op_margin"] == 20.0
+s = fu.summarise(qs)
+assert s["rev_yoy"] == 20.0 and s["ni_yoy"] == 50.0 and s["margin_chg_yoy"] == 2.0, s
+assert s["rev_qoq"] == 9.1, s
+
+px = pd.DataFrame({"close": [100.0, 101, 102, 110, 111, 112, 113, 114, 115]},
+                  index=pd.bdate_range("2026-01-05", periods=9))   # Mon 5 .. Thu 15 Jan
+day = date(2026, 1, 7)                                             # close 102
+assert fu.reaction(px, day, True)["move_pct"] == round((110 / 102 - 1) * 100, 2)    # next day's close
+assert fu.reaction(px, day, False)["move_pct"] == round((102 / 101 - 1) * 100, 2)   # same-day close
+r_unknown = fu.reaction(px, day, None)
+assert r_unknown["move_pct"] == round((110 / 101 - 1) * 100, 2), r_unknown         # spans the day
+assert r_unknown["drift_5d_pct"] == round((114 / 101 - 1) * 100, 2), r_unknown
+assert fu.reaction(px, date(2026, 3, 1), True) == {}
+
+ed = pd.DataFrame({"EPS Estimate": [1.30, 1.00, 1.00], "Reported EPS": [np.nan, 1.10, 0.95],
+                   "Surprise(%)": [np.nan, 10.0, -5.0]},
+                  index=pd.DatetimeIndex(["2099-01-20 16:30", "2026-01-07 16:30", "2025-10-08 09:00"],
+                                         tz="America/New_York"))
+hist_rows, upcoming = fu.surprises_from(ed, "US", px, past_dates=["2026-01-08", "2025-07-09"])
+assert upcoming == {"date": "2099-01-20", "eps_estimate": 1.3}, upcoming
+assert [x["date"] for x in hist_rows] == ["2026-01-07", "2025-10-08", "2025-07-09"], hist_rows
+assert hist_rows[0]["surprise_pct"] == 10.0 and hist_rows[0]["move_pct"] == round((110 / 102 - 1) * 100, 2)
+stats = fu.reaction_stats(hist_rows)
+assert stats["n"] == 1 and stats["beats"] == 1 and stats["misses"] == 1 and stats["rated"] == 2, stats
+json.dumps(stats, allow_nan=False)    # numpy scalars would raise here
+assert fu.analysts_from({"targetMeanPrice": 110, "numberOfAnalystOpinions": 5,
+                         "recommendationKey": "buy"}, 100)["upside_pct"] == 10.0
+
+cx2 = sqlite3.connect(":memory:"); cx2.row_factory = sqlite3.Row
+cx2.executescript(store.SCHEMA); store._migrate(cx2)
+calls = []
+fu.collect = lambda sym, market, df, past=(): calls.append(sym) or {"symbol": sym, "fetched_at": fu.utc_now()}
+fu.time.sleep = lambda _s: None
+got = fu.refresh(cx2, "US", {"AAPL": px, "MSFT": px}, {"AAPL"})
+assert calls == ["AAPL"] and set(got) == {"AAPL"}, (calls, got)
+fu.refresh(cx2, "US", {"AAPL": px, "MSFT": px}, {"AAPL"}, force=["MSFT", "AAPL"])
+assert calls == ["AAPL", "MSFT"], calls          # fresh entries are not re-fetched
+json.dumps(fu.payload("US", got))
+print("fundamentals OK:", len(qs), "quarters,", stats)
 print("\nALL OFFLINE CHECKS PASSED")

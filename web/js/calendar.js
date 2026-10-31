@@ -76,6 +76,24 @@ function eventLink(e) {
   return `https://finance.yahoo.com/quote/${encodeURIComponent(e.symbol)}/`;
 }
 
+/** At-a-glance results tag: the surprise once reported, the usual move before. */
+function resultsHint(ctx, e) {
+  if (!e.types.includes('results')) return null;
+  const items = ctx.fundamentals?.items ?? {};
+  const f = items[e.symbol] ?? Object.values(items).find((x) => baseSym(x.symbol) === baseSym(e.symbol));
+  if (!f) return null;
+  const h = (f.history ?? []).find((x) => Math.abs(Date.parse(x.date) - Date.parse(e.date)) <= 5 * 86400e3);
+  if (h && h.surprise_pct !== null && h.surprise_pct !== undefined) {
+    const beat = h.surprise_pct >= 0;
+    return el('span', { class: `tag ${beat ? 'bull' : 'bear'}`, title: 'Reported EPS against the analyst estimate' },
+      `${beat ? 'beat' : 'miss'} ${h.surprise_pct >= 0 ? '+' : ''}${h.surprise_pct.toFixed(1)}%`);
+  }
+  const typical = f.reactions?.typical_abs_move;
+  return typical
+    ? el('span', { class: 'tag', title: `Median results-day move over the last ${f.reactions.n} reports` }, `±${typical.toFixed(1)}% usual`)
+    : null;
+}
+
 export function eventRow(e, ctx, { showDate = false } = {}) {
   const watched = ctx.watchSymbols.some((s) => baseSym(s) === baseSym(e.symbol));
   const hasQuote = (ctx.bundle?.quotes ?? []).some((q) => q.symbol === e.symbol);
@@ -92,14 +110,20 @@ export function eventRow(e, ctx, { showDate = false } = {}) {
       onclick: () => (hasQuote || watched ? ctx.openStock(e.symbol) : null),
       disabled: !(hasQuote || watched),
     }, display(e.symbol), watched ? el('span', { class: 'star', title: 'On your watchlist' }, '★') : null),
-    el('div', { class: 'ev-main' },
+    el('div', {
+      class: 'ev-main', role: 'button', tabindex: '0', title: 'Results, expectations, reaction history and news',
+      onclick: () => ctx.openEvent?.(e),
+      onkeydown: (k) => { if (k.key === 'Enter') ctx.openEvent?.(e); },
+    },
       el('div', { class: 'ev-title' }, e.title),
       el('div', { class: 'ev-detail' },
         [e.company, e.time, e.detail].filter(Boolean).join(' · '))),
     el('div', { class: 'ev-tags' },
       ...e.types.filter((t) => t !== 'board_meeting').slice(0, 2)
         .map((t) => el('span', { class: `tag t-${t}` }, TYPE_LABEL[t] ?? t)),
+      resultsHint(ctx, e),
       sourceTag,
+      ctx.openEvent ? el('button', { class: 'btn sm ev-open', onclick: () => ctx.openEvent(e) }, 'Details') : null,
       el('a', { href: eventLink(e), target: '_blank', rel: 'noopener noreferrer',
         title: e.link ? 'Open the filing' : `Look it up on ${e.source}` }, e.link ? 'Filing ↗' : 'Source ↗')));
 }
@@ -245,10 +269,10 @@ export function calendar(ctx) {
         ...groups.get(d)
           .sort((a, b) => Number(watchBases.has(baseSym(b.symbol))) - Number(watchBases.has(baseSym(a.symbol))))
           .map((e) => eventRow(e, ctx)))),
-      rows.length > st.limit
-        ? el('button', { class: 'btn', style: 'margin-top:12px',
-            onclick: () => { st.limit += PAGE; draw(); } }, `Show ${Math.min(PAGE, rows.length - st.limit)} more`)
-        : null);
+      ...(rows.length > st.limit
+        ? [el('button', { class: 'btn', style: 'margin-top:12px',
+            onclick: () => { st.limit += PAGE; draw(); } }, `Show ${Math.min(PAGE, rows.length - st.limit)} more`)]
+        : []));
   }
 
   draw();

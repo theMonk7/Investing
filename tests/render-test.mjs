@@ -67,6 +67,14 @@ for (const market of ['IN', 'US']) {
     const chars = main.textContent.trim().length;
     report.push(`${market}/${v.padEnd(10)} nodes=${String(nodes).padStart(5)} chars=${String(chars).padStart(6)}`);
     if (nodes < 25) errors.push(`${market}/${v} rendered almost nothing (${nodes} nodes)`);
+    // replaceChildren()/append() turn a null child into the text "null".
+    const walker = doc.createTreeWalker(main, window.NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      if (/^(null|undefined)$/.test(walker.currentNode.textContent.trim())) {
+        errors.push(`${market}/${v} shows a stray "${walker.currentNode.textContent.trim()}"`);
+        break;
+      }
+    }
     if (/Nothing here yet\.$/.test(main.textContent.trim()) && v !== 'alerts') {
       errors.push(`${market}/${v} rendered only the empty state`);
     }
@@ -156,9 +164,42 @@ if (doc.querySelector('#main .calendar .seg')) {
   if (!own || own < syms.length / 2) errors.push(`ticker filter is off: ${[...new Set(syms)]}`);
   if (!unknown) errors.push('unknown ticker banner missing on calendar');
   type(doc.querySelector('#calTickers'), '');
+  await sleep(100);
+
+  // Event detail: every row opens a populated panel, with or without results data.
+  let opened = 0, withData = 0, withLean = 0;
+  for (const market of ['IN', 'US']) {
+    await setMarket(market);
+    click(doc.querySelector('#nav [data-view="calendar"]'));
+    await sleep(100);
+    click(doc.querySelector('#main .seg button[data-id="all"]'));
+    await sleep(100);
+    const n = doc.querySelectorAll('#main .ev-open').length;
+    for (let i = 0; i < n; i++) {
+      click(doc.querySelectorAll('#main .ev-open')[i]);
+      await sleep(10);
+      const d = doc.querySelector('#modalRoot .drawer');
+      if (!d) { errors.push(`${market}: event ${i} did not open a panel`); continue; }
+      opened++;
+      if (!d.classList.contains('wide')) errors.push('event panel is not the wide drawer');
+      if (d.querySelectorAll('.ed-sec').length < 3) errors.push(`${market}: event panel ${i} is nearly empty`);
+      if (d.querySelector('.ed-table')) withData++;
+      if (d.querySelector('.ed-lean')) withLean++;
+      const bad = d.textContent.match(/.{0,45}(NaN|undefined|\bnull\b|\[object Object\]|Infinity).{0,45}/);
+      if (bad) errors.push(`${market}: event panel has bad values: ${bad[0]}`);
+      doc.querySelector('#modalRoot').replaceChildren();
+    }
+  }
+  report.push(`event panels: opened=${opened} with results data=${withData} with lean=${withLean}`);
+  if (!opened) errors.push('no calendar row has a Details button');
+  await setMarket('IN');
 } else {
   report.push('calendar: no events.json, empty state only');
 }
+
+const acct = doc.querySelector('#acctBtn');
+if (!acct?.textContent.trim() || !acct.title) errors.push('account indicator is empty');
+else report.push(`account: ${acct.className} "${acct.textContent}"`);
 
 // News: ticker filter and the unknown-ticker prompt.
 click(doc.querySelector('#nav [data-view="news"]'));

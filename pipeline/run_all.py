@@ -33,6 +33,7 @@ import disclosures
 import events as events_mod
 import fetch_news
 import fetch_prices
+import fundamentals
 import llm
 import movers as movers_mod
 import predict as predict_mod
@@ -105,6 +106,15 @@ def refresh_events(cx, market: str, symbols: list[str] | None, tracked: list[str
             corporate_events.refresh(cx, market, tracked, names)
         out = corporate_events.export(cx, market, DATA_DIR / market / "events.json")
         print(f"[{market}] calendar: {len(out['items'])} events")
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+
+
+def refresh_fundamentals(cx, market: str, histories: dict, watched, force=()) -> None:
+    """Results data is extra context: a Yahoo failure must not fail the run."""
+    try:
+        items = fundamentals.refresh(cx, market, histories, watched, force=force)
+        write_json(DATA_DIR / market / "fundamentals.json", fundamentals.payload(market, items))
     except Exception:  # noqa: BLE001
         traceback.print_exc()
 
@@ -205,6 +215,7 @@ def run_market(cx, market: str, mode: str, model, metrics: dict) -> dict:
         logged = reactions.log_from_news(cx, all_items, market)
         print(f"[{market}] logged {logged} classified events")
         refresh_events(cx, market, None, sorted(watched), names)
+        refresh_fundamentals(cx, market, histories, watched)
     else:
         sentiments = get_meta(cx, f"sentiments:{market}", {})
         market_sent = get_meta(cx, f"market_sent:{market}", market_sent)
@@ -422,6 +433,7 @@ def run_quick(cx, market: str, symbols: list[str], model, metrics: dict) -> dict
         q["watched"] = q["symbol"] in watched
 
     refresh_events(cx, market, targets, sorted(watched), names)
+    refresh_fundamentals(cx, market, histories, watched, force=list(histories))
 
     charted = write_charts(market, histories, watched)
     charts = (set(bundle.get("charts_available") or []) | charted) & watched
